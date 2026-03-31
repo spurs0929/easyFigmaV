@@ -16,6 +16,7 @@
     "format": "prettier --write --experimental-cli src/"
   },
   "dependencies": {
+    "@primevue/themes": "^4.5.4",
     "@stomp/stompjs": "^7.3.0",
     "autoprefixer": "^10.4.27",
     "konva": "^10.2.3",
