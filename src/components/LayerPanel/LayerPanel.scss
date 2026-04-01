@@ -1,0 +1,134 @@
+$color-bg:       #1e1e1e;
+$color-border:   #2a2a2a;
+$color-text:     #ccc;
+$color-text-dim: #999;
+$color-text-muted: #555;
+$color-hover-bg: #282828;
+$color-selected-bg: #2c2c3e;
+$color-accent:   #6366f1;
+$color-icon:     #888;
+$font-size-base: 12px;
+$font-size-sm:   11px;
+$font-size-xs:   10px;
+$row-height:     28px;
+$indent-step:    16px; // 每層縮排量（px），與 template :style paddingLeft 一致
+
+// ── 容器 ─────────────────────────────────────────────────────────────────────
+
+.layer-panel {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  min-width: 220px;
+  background: $color-bg;
+  border-right: 1px solid $color-border;
+  overflow: hidden;
+  font-size: $font-size-base;
+  color: $color-text;
+
+  // ── 標題列 ────────────────────────────────────────────────────────────────
+  &__header {
+    flex-shrink: 0;
+    padding: 10px 12px 8px;
+    font-weight: 600;
+    font-size: $font-size-sm;
+    color: $color-text-dim;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid $color-border;
+  }
+
+  // ── 圖層捲動區 ────────────────────────────────────────────────────────────
+  &__list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+    scrollbar-width: thin;
+    scrollbar-color: #333 transparent;
+  }
+
+  // ── 空狀態 ────────────────────────────────────────────────────────────────
+  &__empty {
+    padding: 16px 12px;
+    color: $color-text-muted;
+  }
+}
+
+// ── 圖層列 ───────────────────────────────────────────────────────────────────
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  min-height: $row-height;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  user-select: none;
+
+  &:hover {
+    background: $color-hover-bg;
+  }
+
+  // ── 選取狀態 ──────────────────────────────────────────────────────────────
+  &--selected {
+    background: $color-selected-bg;
+    border-left-color: $color-accent;
+    color: #fff;
+
+    .layer-row__icon {
+      color: lighten($color-icon, 20%);
+    }
+  }
+
+  // ── 展開 / 收合按鈕 ───────────────────────────────────────────────────────
+  &__toggle {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: $font-size-xs;
+    line-height: 1;
+    color: #666;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+
+    &:hover {
+      color: #aaa;
+    }
+
+    &--spacer {
+      pointer-events: none;
+      display: inline-block;
+    }
+  }
+
+  // ── 種類圖示 ──────────────────────────────────────────────────────────────
+  &__icon {
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    font-size: $font-size-sm;
+    color: $color-icon;
+  }
+
+  // ── 圖層名稱 ──────────────────────────────────────────────────────────────
+  &__name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  // ── 鎖定 / 隱藏徽章 ───────────────────────────────────────────────────────
+  &__badge {
+    flex-shrink: 0;
+    font-size: $font-size-xs;
+    opacity: 0.5;
+  }
+}
+</style>
