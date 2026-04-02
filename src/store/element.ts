@@ -445,6 +445,7 @@ export const useElementStore = defineStore('element', () => {
     // History
     undo,
     redo,
+    pushSnapshot: _pushSnapshot,
     // Selection
     select,
     selectAll,
