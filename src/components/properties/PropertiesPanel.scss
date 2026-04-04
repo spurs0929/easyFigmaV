@@ -1,0 +1,172 @@
+$color-bg:       #1e1e1e;
+$color-border:   #2a2a2a;
+$color-text:     #ccc;
+$color-text-dim: #999;
+$color-text-muted: #555;
+$color-input-bg: #2a2a2a;
+$color-input-border: #333;
+$color-accent:   #6366f1;
+$font-size-base: 12px;
+$font-size-sm:   11px;
+$font-size-xs:   10px;
+
+// ── 容器 ─────────────────────────────────────────────────────────────────────
+
+.props-panel {
+  width: 240px;
+  min-width: 240px;
+  background: $color-bg;
+  border-left: 1px solid $color-border;
+  overflow-x: hidden;
+  overflow-y: auto;
+  font-size: $font-size-base;
+  color: $color-text;
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+// ── Kind 標頭 ─────────────────────────────────────────────────────────────────
+
+.props-kind {
+  padding: 10px 12px 8px;
+  font-weight: 600;
+  font-size: $font-size-sm;
+  color: $color-text-dim;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid $color-border;
+}
+
+// ── Section ───────────────────────────────────────────────────────────────────
+
+.props-section {
+  padding: 10px 12px;
+  border-bottom: 1px solid $color-border;
+
+  &-title {
+    font-size: $font-size-sm;
+    font-weight: 600;
+    color: #888;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+}
+
+// ── 2 欄網格 ──────────────────────────────────────────────────────────────────
+
+.props-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+// ── 輸入欄位 ──────────────────────────────────────────────────────────────────
+
+.props-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: $color-input-bg;
+  border: 1px solid $color-input-border;
+  border-radius: 4px;
+  padding: 3px 6px;
+
+  &--wide {
+    grid-column: span 2;
+  }
+
+  &:focus-within {
+    border-color: $color-accent;
+  }
+
+  input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: #e0e0e0;
+    font-size: $font-size-base;
+    width: 0;      // 允許 flex 自行分配寬度
+    min-width: 0;
+    font-family: inherit;
+
+    // 隱藏 number input 的上下箭頭
+    &::-webkit-outer-spin-button,
+    &::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+    }
+    -moz-appearance: textfield;
+  }
+}
+
+// ── 標籤 / 單位文字 ───────────────────────────────────────────────────────────
+
+.props-label {
+  font-size: $font-size-xs;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.props-unit {
+  font-size: $font-size-xs;
+  color: #666;
+  flex-shrink: 0;
+}
+
+// ── 顏色列 ────────────────────────────────────────────────────────────────────
+
+.props-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.props-color-swatch {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  background: none;
+  // 去除瀏覽器預設樣式讓色塊填滿
+  -webkit-appearance: none;
+  appearance: none;
+
+  &::-webkit-color-swatch-wrapper { padding: 0; }
+  &::-webkit-color-swatch         { border: none; border-radius: 3px; }
+  &::-moz-color-swatch            { border: none; border-radius: 3px; }
+}
+
+.props-hex {
+  flex: 1;
+  background: $color-input-bg;
+  border: 1px solid $color-input-border;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: $font-size-base;
+  padding: 3px 6px;
+  outline: none;
+  font-family: 'Courier New', monospace;
+  min-width: 0;
+
+  &:focus {
+    border-color: $color-accent;
+  }
+}
+
+.props-stroke-w {
+  flex: 0 1 52px;
+  min-width: 0;
+}
+
+// ── 空狀態 ────────────────────────────────────────────────────────────────────
+
+.props-empty {
+  padding: 24px 12px;
+  color: $color-text-muted;
+  font-size: $font-size-base;
+  text-align: center;
+}
