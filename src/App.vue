@@ -1,11 +1,16 @@
-<script setup lang="ts"></script>
+<script setup lang="ts">
+import '@/styles/global.scss'
+import AppToolbar from '@/components/toolbar/AppToolbar.vue'
+import LayerPanel from '@/components/LayerPanel/LayerPanel.vue'
+import CanvasArea from '@/components/canvas/canvas.vue'
+import PropertiesPanel from '@/components/properties/PropertiesPanel.vue'
+</script>
 
 <template>
-  <h1>You did it!</h1>
-  <p>
-    Visit <a href="https://vuejs.org/" target="_blank" rel="noopener">vuejs.org</a> to read the
-    documentation
-  </p>
+  <div class="app-layout">
+    <AppToolbar />
+    <LayerPanel />
+    <CanvasArea />
+    <PropertiesPanel />
+  </div>
 </template>
-
-<style scoped></style>
