@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import Popover from 'primevue/popover'
-import { useToolStore } from '@/stores/tool'
+import { useToolStore } from '@/store/tool'
 import {
   TOOL_GROUPS,
   ToolGroup,
