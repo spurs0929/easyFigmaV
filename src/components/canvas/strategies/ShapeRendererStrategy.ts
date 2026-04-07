@@ -113,7 +113,7 @@ function rectBoundedElement(
   return { ...elementDefaults(), kind, x, y, width, height, fill, stroke: ELEMENT_DEFAULT_STROKE, strokeWidth: 1 }
 }
 
-function buildMap<K, V>(entries: [K, V][], label: string): Map<K, V> {
+function buildMap<K, V>(entries: ReadonlyArray<readonly [K, V]>, label: string): Map<K, V> {
   const map = new Map<K, V>()
   for (const [k, v] of entries) {
     if (import.meta.env.DEV && map.has(k)) {
@@ -182,6 +182,12 @@ class EllipseRenderer implements DrawableRenderer {
 
 // ── Line ───────────────────────────────────────────────────────────────────────
 
+/**
+ * Line 的最小可點擊寬度（world units）。
+ * Konva.Line 的視覺描邊可能只有 1px，hitStrokeWidth 確保使用者能穩定點到細線。
+ */
+const LINE_HIT_STROKE_W = 8
+
 class LineRenderer implements DrawableRenderer {
   readonly konvaClassName = 'Line'
   readonly elementKinds   = [ElementKind.Line] as const
@@ -192,7 +198,14 @@ class LineRenderer implements DrawableRenderer {
    * Konva.Line 有 fill 時自動閉合成多邊形；明確覆蓋防止繼承 attrs.fill 的顏色。
    */
   private toConfig(el: CanvasElement, attrs: BaseShapeAttrs) {
-    return { ...konvaAttrs(attrs), fill: '', x: el.x, y: el.y, points: [0, 0, el.width, el.height] }
+    return {
+      ...konvaAttrs(attrs),
+      fill:           '',
+      x:              el.x,
+      y:              el.y,
+      points:         [0, 0, el.width, el.height],
+      hitStrokeWidth: Math.max(el.strokeWidth, LINE_HIT_STROKE_W),
+    }
   }
 
   build(el: CanvasElement, attrs: BaseShapeAttrs): Konva.Shape { return new Konva.Line(this.toConfig(el, attrs)) }
@@ -277,7 +290,7 @@ class GroupRenderer implements ShapeRenderer {
       stroke:      attrs.selected ? COLOR_SELECTION : 'rgba(148,163,184,0.4)',
       strokeWidth: attrs.strokeWidth,
       dash:        attrs.selected ? [] : [4, 4],
-      listening:   false,
+      listening:   true,
     }
   }
 
