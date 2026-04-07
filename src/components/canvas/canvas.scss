@@ -1,0 +1,88 @@
+// ── 色彩 ─────────────────────────────────────────────────────────────────────
+
+$color-canvas-bg:    #141414;
+$color-menu-bg:      #1e1e1e;
+$color-menu-border:  #333;
+$color-menu-hover:   #2d2d2d;
+$color-text:         #c9d1d9;
+$color-text-muted:   #6b7280;
+$color-danger:       #f87171;
+$color-danger-hover: rgba(248, 113, 113, 0.1);
+
+// ── 尺寸 ─────────────────────────────────────────────────────────────────────
+
+$menu-min-width:     180px;
+$menu-padding-v:     4px;
+$menu-radius:        6px;
+$menu-item-padding:  6px 12px;
+$menu-item-gap:      16px;
+$menu-item-radius:   4px;
+$menu-item-margin-h: 4px;
+$menu-item-font:     13px;
+$menu-kbd-font:      11px;
+$menu-sep-height:    1px;
+$menu-sep-margin-v:  4px;
+
+// ── Canvas 容器 ───────────────────────────────────────────────────────────────
+
+.canvas-container {
+  flex:       1;
+  position:   relative;
+  background: $color-canvas-bg;
+  overflow:   hidden;
+  min-width:  0;
+}
+
+// ── Context Menu ──────────────────────────────────────────────────────────────
+
+.ctx-menu {
+  position:    absolute;
+  z-index:     100;
+  min-width:   $menu-min-width;
+  padding:     $menu-padding-v 0;
+  background:  $color-menu-bg;
+  border:      1px solid $color-menu-border;
+  border-radius: $menu-radius;
+  box-shadow:  0 8px 24px rgba(0, 0, 0, 0.5);
+  list-style:  none;
+  margin:      0;
+  user-select: none;
+}
+
+.ctx-item {
+  display:         flex;
+  justify-content: space-between;
+  align-items:     center;
+  gap:             $menu-item-gap;
+  padding:         $menu-item-padding;
+  font-size:       $menu-item-font;
+  color:           $color-text;
+  cursor:          default;
+  border-radius:   $menu-item-radius;
+  margin:          0 $menu-item-margin-h;
+
+  kbd {
+    font-size:   $menu-kbd-font;
+    color:       $color-text-muted;
+    font-family: inherit;
+    background:  none;
+    border:      none;
+    padding:     0;
+  }
+
+  &:hover {
+    background: $color-menu-hover;
+    color:      #fff;
+  }
+
+  &--danger {
+    color: $color-danger;
+    &:hover { background: $color-danger-hover; }
+  }
+}
+
+.ctx-sep {
+  height:     $menu-sep-height;
+  background: $color-menu-border;
+  margin:     $menu-sep-margin-v 0;
+}
