@@ -408,7 +408,7 @@ export const useElementStore = defineStore('element', () => {
   }
 
   function selectAll(): void {
-    _selectedIds.value = new Set(Object.keys(_store.value.byId))
+    _selectedIds.value = new Set(_store.value.rootIds)
   }
 
   function clearSelection(): void {
