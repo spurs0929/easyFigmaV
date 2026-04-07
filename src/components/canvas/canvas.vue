@@ -4,8 +4,10 @@ import Konva from 'konva'
 import { useElementStore } from '@/store/element'
 import { useViewportStore } from '@/store/viewport'
 import { useToolStore } from '@/store/tool'
-import { type CanvasElement, newElementId } from '@/types/element'
+import { type CanvasElement, ElementKind, newElementId } from '@/types/element'
 import { ToolType } from '@/types/tool'
+import { isTypingTarget, getDeepActiveElement } from '@/constants/canvas'
+import type { GestureState, ContextMenuState } from '@/types/canvas'
 import {
   ZOOM_STEP,
   MIN_STROKE_SCREEN_PX, SELECTION_STROKE_SCREEN_PX,
@@ -48,18 +50,15 @@ let _zOrderSnapshot: string[] = []
 
 // ── Gesture State Machine ─────────────────────────────────────────────────────
 
-type GestureState =
-  | { kind: 'idle' }
-  | { kind: 'panning';  stageX: number; stageY: number; px: number; py: number }
-  | { kind: 'dragging'; startWorld: Point; starts: Array<{ id: string; x: number; y: number }> }
-  | { kind: 'marquee';  start: Point; rect: Konva.Rect }
-  | { kind: 'drawing';  start: Point; ghost: Konva.Shape }
-
 let _gesture: GestureState = { kind: 'idle' }
 
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
 let _gridVisible = initGridVisible(viewportStore.viewport.scale)
+
+// ── Context Menu ───────────────────────────────────────────────────────────────
+
+const contextMenu = ref<ContextMenuState | null>(null)
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +69,16 @@ function absoluteCoords(el: CanvasElement): CanvasElement {
   if (!parent) return el
   const absParent = absoluteCoords(parent)
   return { ...el, x: el.x + absParent.x, y: el.y + absParent.y }
+}
+
+function rootSelectableId(id: string): string {
+  let current = elementStore.get(id)
+  while (current?.parentId) {
+    const parent = elementStore.get(current.parentId)
+    if (!parent) break
+    current = parent
+  }
+  return current?.id ?? id
 }
 
 /** 螢幕指針位置 → 世界座標。 */
@@ -141,8 +150,11 @@ function registerShapeEvents(shape: Konva.Shape, elId: string): void {
   shape.on('click', (e: Konva.KonvaEventObject<MouseEvent>) => {
     e.cancelBubble = true
     if (e.evt.button !== 0) return
+    // 若元素屬於群組，第一次點擊選取群組而非子元素（Figma 行為）
+    const el       = elementStore.get(elId)
+    const selectId = rootSelectableId(elId)
     if (!e.evt.shiftKey) elementStore.clearSelection()
-    elementStore.select(elId, e.evt.shiftKey)
+    elementStore.select(selectId, e.evt.shiftKey)
   })
 }
 
@@ -244,6 +256,7 @@ function registerStageEvents(): void {
   stage.on('click', (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (e.evt.button === 0 && e.target === stage) elementStore.clearSelection()
   })
+
 }
 
 // ── Gesture Handlers ───────────────────────────────────────────────────────────
@@ -275,10 +288,8 @@ function startDragging(e: Konva.KonvaEventObject<MouseEvent>, world: Point): voi
   const el   = elId ? elementStore.get(elId) : undefined
   if (!el) return
 
-  // 若點擊的子元素其父群組已選取 → 改為拖曳群組
-  const dragId = (el.parentId && elementStore.selectedIds.has(el.parentId))
-    ? el.parentId
-    : el.id
+  // 子元素一律提升至父群組，確保拖曳時移動整個群組
+  const dragId = rootSelectableId(el.id)
 
   if (!elementStore.selectedIds.has(dragId)) {
     if (!e.evt.shiftKey) elementStore.clearSelection()
@@ -403,6 +414,154 @@ function commitDraw(g: Extract<GestureState, { kind: 'drawing' }>): CanvasElemen
   return { id: newElementId(), name: `${data.kind} ${Date.now()}`, ...data }
 }
 
+// ── Canvas Actions ─────────────────────────────────────────────────────────────
+
+function deleteSelected(): void {
+  const ids = [...elementStore.selectedIds]
+  if (ids.length === 0) return
+  for (const id of ids) elementStore.remove(id)
+}
+
+/** 從目前選取集合中取出 root-level 元素 ID（group() 只接受 root-level）。 */
+function rootLevelSelectedIds(): string[] {
+  return [...elementStore.selectedIds].filter(id => {
+    const el = elementStore.get(id)
+    return el && !el.parentId
+  })
+}
+
+function groupSelected(): void {
+  const ids = rootLevelSelectedIds()
+  if (ids.length < 2) return
+  const groupId = elementStore.group(ids)
+  if (!groupId) return
+  elementStore.clearSelection()
+  elementStore.select(groupId)
+}
+
+function ungroupSelected(): void {
+  const groups = elementStore.selectedElements
+    .filter(el => el.kind === ElementKind.Group)
+  if (groups.length === 0) return
+  elementStore.clearSelection()
+  for (const group of groups) {
+    for (const childId of elementStore.ungroup(group.id)) {
+      elementStore.select(childId, true)
+    }
+  }
+}
+
+function duplicateSelected(): void {
+  const selected = elementStore.selectedElements
+  if (selected.length === 0) return
+
+  const allCopies: CanvasElement[] = []
+  const rootCopyIds: string[]      = []
+
+  for (const el of selected) {
+    if (el.kind === ElementKind.Group) {
+      const newGroupId   = newElementId()
+      const childIdRemap = new Map(el.childIds.map(cid => [cid, newElementId()]))
+
+      allCopies.push({
+        ...el,
+        id:       newGroupId,
+        name:     `${el.name} copy`,
+        x:        el.x + 10,
+        y:        el.y + 10,
+        childIds: el.childIds.map(cid => childIdRemap.get(cid)!),
+      })
+      rootCopyIds.push(newGroupId)
+
+      for (const childId of el.childIds) {
+        const child = elementStore.get(childId)
+        if (child) {
+          allCopies.push({ ...child, id: childIdRemap.get(childId)!, parentId: newGroupId })
+        }
+      }
+    } else {
+      const copy = { ...el, id: newElementId(), name: `${el.name} copy`, x: el.x + 10, y: el.y + 10 }
+      allCopies.push(copy)
+      rootCopyIds.push(copy.id)
+    }
+  }
+
+  elementStore.addAll(allCopies)
+  elementStore.clearSelection()
+  for (const id of rootCopyIds) elementStore.select(id, true)
+}
+
+// ── Context Menu ───────────────────────────────────────────────────────────────
+
+/**
+ * Native DOM contextmenu handler（綁在 container div）。
+ * 使用 DOM 事件而非 stage.on('contextmenu')，確保右鍵在任何子節點皆可靠觸發；
+ * 再透過 stage.getIntersection 做 Konva hit-test。
+ */
+function onContainerContextMenu(e: MouseEvent): void {
+  if (!stage) return
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const pos  = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  const hit  = stage.getIntersection(pos) as Konva.Shape | null
+  const elId = hit?.id() ?? null
+
+  // 右鍵點擊未選取的元素 → 先選取（提升至父群組）
+  if (elId) {
+    const selectId = rootSelectableId(elId)
+    if (!elementStore.selectedIds.has(selectId)) {
+      elementStore.clearSelection()
+      elementStore.select(selectId)
+    }
+  } else if (elementStore.selectedIds.size > 0) {
+    elementStore.clearSelection()
+  }
+
+  const selectedIds  = elementStore.selectedIds
+  const selectedEls  = elementStore.selectedElements
+  const rootSelected = selectedEls.filter(el => !el.parentId)
+
+  contextMenu.value = {
+    x:            pos.x,
+    y:            pos.y,
+    hasSelection: selectedIds.size > 0,
+    canGroup:     rootSelected.length >= 2,
+    canUngroup:   selectedEls.some(el => el.kind === ElementKind.Group),
+  }
+}
+
+function closeContextMenu(): void {
+  contextMenu.value = null
+}
+
+// ── Keyboard ───────────────────────────────────────────────────────────────────
+
+function keyCombo(e: KeyboardEvent): string {
+  const parts: string[] = []
+  if (e.ctrlKey || e.metaKey) parts.push('ctrl')
+  if (e.shiftKey)              parts.push('shift')
+  parts.push(e.key.toLowerCase())
+  return parts.join('+')
+}
+
+const _keyCommands = new Map<string, (e: KeyboardEvent) => void>([
+  ['delete',        (e) => { e.preventDefault(); deleteSelected() }],
+  ['backspace',     (e) => { e.preventDefault(); deleteSelected() }],
+  ['ctrl+z',        (e) => { e.preventDefault(); elementStore.undo() }],
+  ['ctrl+y',        (e) => { e.preventDefault(); elementStore.redo() }],
+  ['ctrl+shift+z',  (e) => { e.preventDefault(); elementStore.redo() }],
+  ['ctrl+d',        (e) => { e.preventDefault(); duplicateSelected() }],
+  ['ctrl+g',        (e) => { e.preventDefault(); groupSelected() }],
+  ['ctrl+shift+g',  (e) => { e.preventDefault(); ungroupSelected() }],
+  ['ctrl+a',        (e) => { e.preventDefault(); elementStore.selectAll() }],
+  [']',             (e) => { e.preventDefault(); [...elementStore.selectedIds].forEach(id => elementStore.bringToFront(id)); elementStore.pushSnapshot() }],
+  ['[',             (e) => { e.preventDefault(); [...elementStore.selectedIds].forEach(id => elementStore.sendToBack(id)); elementStore.pushSnapshot() }],
+])
+
+function onKeydown(e: KeyboardEvent): void {
+  if (isTypingTarget(getDeepActiveElement())) return
+  _keyCommands.get(keyCombo(e))?.(e)
+}
+
 // ── Lifecycle ──────────────────────────────────────────────────────────────────
 
 onMounted(() => {
@@ -435,24 +594,66 @@ onMounted(() => {
       stage.container().style.cursor = cursor
     }
   })
+
+  document.addEventListener('keydown', onKeydown)
+  document.addEventListener('click', closeContextMenu)
 })
 
 onUnmounted(() => {
   _resizeObserver?.disconnect()
   stage?.destroy()
+  document.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('click', closeContextMenu)
 })
 </script>
 
 <template>
-  <div ref="containerRef" class="canvas-container" />
+  <div ref="containerRef" class="canvas-container" @contextmenu.prevent="onContainerContextMenu">
+
+    <!-- 右鍵選單 -->
+    <ul
+      v-if="contextMenu"
+      class="ctx-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+    >
+      <template v-if="contextMenu.hasSelection">
+        <li class="ctx-item" @click="elementStore.bringToFront([...elementStore.selectedIds][0]); closeContextMenu()">
+          Bring to Front <kbd>]</kbd>
+        </li>
+        <li class="ctx-item" @click="[...elementStore.selectedIds].forEach(id => elementStore.moveUp(id)); closeContextMenu()">
+          Move Up
+        </li>
+        <li class="ctx-item" @click="[...elementStore.selectedIds].forEach(id => elementStore.moveDown(id)); closeContextMenu()">
+          Move Down
+        </li>
+        <li class="ctx-item" @click="elementStore.sendToBack([...elementStore.selectedIds][0]); closeContextMenu()">
+          Send to Back <kbd>[</kbd>
+        </li>
+        <li class="ctx-sep" />
+        <li v-if="contextMenu.canGroup" class="ctx-item" @click="groupSelected(); closeContextMenu()">
+          Group <kbd>Ctrl G</kbd>
+        </li>
+        <li v-if="contextMenu.canUngroup" class="ctx-item" @click="ungroupSelected(); closeContextMenu()">
+          Ungroup <kbd>Ctrl Shift G</kbd>
+        </li>
+        <li class="ctx-sep" />
+        <li class="ctx-item" @click="duplicateSelected(); closeContextMenu()">
+          Duplicate <kbd>Ctrl D</kbd>
+        </li>
+        <li class="ctx-sep" />
+        <li class="ctx-item ctx-item--danger" @click="deleteSelected(); closeContextMenu()">
+          Delete <kbd>Del</kbd>
+        </li>
+      </template>
+      <template v-else>
+        <li class="ctx-item" @click="elementStore.selectAll(); closeContextMenu()">
+          Select All <kbd>Ctrl A</kbd>
+        </li>
+      </template>
+    </ul>
+
+  </div>
 </template>
 
-<style scoped lang="scss">
-.canvas-container {
-  flex: 1;
-  position: relative;
-  background: #141414;
-  overflow: hidden;
-  min-width: 0;
-}
-</style>
+<style src="./canvas.scss" lang="scss" scoped />
