@@ -64,7 +64,7 @@ const flatLayers = computed<LayerRow[]>(() => {
 // ── Event Handlers ────────────────────────────────────────────────────────────
 
 function onRowClick(id: string, e: MouseEvent): void {
-  elementStore.select(id, e.shiftKey)
+  elementStore.select(rootSelectableId(id), e.shiftKey)
 }
 
 function onToggleClick(id: string, e: MouseEvent): void {
@@ -72,6 +72,16 @@ function onToggleClick(id: string, e: MouseEvent): void {
   const next = new Set(expandedIds.value)
   next.has(id) ? next.delete(id) : next.add(id)
   expandedIds.value = next
+}
+
+function rootSelectableId(id: string): string {
+  let current = elementStore.get(id)
+  while (current?.parentId) {
+    const parent = elementStore.get(current.parentId)
+    if (!parent) break
+    current = parent
+  }
+  return current?.id ?? id
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
