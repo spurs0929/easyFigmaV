@@ -7,7 +7,7 @@ import PropertiesPanel from '@/components/properties/PropertiesPanel.vue'
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" @contextmenu.prevent>
     <AppToolbar />
     <LayerPanel />
     <CanvasArea />
