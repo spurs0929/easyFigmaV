@@ -500,20 +500,19 @@ function duplicateSelected(): void {
  */
 function onContainerContextMenu(e: MouseEvent): void {
   if (!stage) return
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const pos  = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-  const hit  = stage.getIntersection(pos) as Konva.Shape | null
-  const elId = hit?.id() ?? null
+  const rect      = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const stagePos  = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  const hit       = stage.getIntersection(stagePos) as Konva.Shape | null
+  const elId      = hit?.id() ?? null
 
   // 右鍵點擊未選取的元素 → 先選取（提升至父群組）
+  // 右鍵點擊空白區域 → 保留現有選取，讓選單仍能對已選元素操作
   if (elId) {
     const selectId = rootSelectableId(elId)
     if (!elementStore.selectedIds.has(selectId)) {
       elementStore.clearSelection()
       elementStore.select(selectId)
     }
-  } else if (elementStore.selectedIds.size > 0) {
-    elementStore.clearSelection()
   }
 
   const selectedIds  = elementStore.selectedIds
@@ -521,8 +520,8 @@ function onContainerContextMenu(e: MouseEvent): void {
   const rootSelected = selectedEls.filter(el => !el.parentId)
 
   contextMenu.value = {
-    x:            pos.x,
-    y:            pos.y,
+    x:            e.clientX,
+    y:            e.clientY,
     hasSelection: selectedIds.size > 0,
     canGroup:     rootSelected.length >= 2,
     canUngroup:   selectedEls.some(el => el.kind === ElementKind.Group),
@@ -610,7 +609,8 @@ onUnmounted(() => {
 <template>
   <div ref="containerRef" class="canvas-container" @contextmenu.prevent="onContainerContextMenu">
 
-    <!-- 右鍵選單 -->
+    <!-- 右鍵選單：Teleport 至 body 避免與 Konva DOM 衝突 -->
+    <Teleport to="body">
     <ul
       v-if="contextMenu"
       class="ctx-menu"
@@ -652,6 +652,7 @@ onUnmounted(() => {
         </li>
       </template>
     </ul>
+    </Teleport>
 
   </div>
 </template>
