@@ -52,6 +52,9 @@ let _zOrderSnapshot: string[] = []
 
 let _gesture: GestureState = { kind: 'idle' }
 
+// marquee 完成後抑制 stage click → clearSelection（Konva 不知道我們在手動拖曳）
+let _suppressNextStageClick = false
+
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
 let _gridVisible = initGridVisible(viewportStore.viewport.scale)
@@ -252,8 +255,9 @@ function registerStageEvents(): void {
   stage.on('mousemove', () => onMouseMove())
   stage.on('mouseup',   () => onMouseUp())
 
-  // 點擊 stage 空白區域 → 清除選取
+  // 點擊 stage 空白區域 → 清除選取（marquee 結束後跳過，避免覆蓋框選結果）
   stage.on('click', (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (_suppressNextStageClick) { _suppressNextStageClick = false; return }
     if (e.evt.button === 0 && e.target === stage) elementStore.clearSelection()
   })
 
@@ -370,7 +374,7 @@ function onMouseUp(): void {
     return
   }
 
-  if (g.kind === 'marquee') { commitMarquee(g); return }
+  if (g.kind === 'marquee') { _suppressNextStageClick = true; commitMarquee(g); return }
 
   if (g.kind === 'drawing') {
     const el = commitDraw(g)
