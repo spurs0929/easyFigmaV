@@ -5,6 +5,8 @@ import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
 export default defineConfig({
+  // GitHub Pages 部署路徑 (repo 名稱)
+  base: '/easyFigmaV/',
   plugins: [
     vue(),
     // 開發環境 Vue DevTools，生產環境自動停用。
