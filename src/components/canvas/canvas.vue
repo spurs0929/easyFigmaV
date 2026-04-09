@@ -22,6 +22,7 @@ import {
   RENDERER_BY_KIND, RENDERER_BY_TOOL, paintColor,
 } from './strategies/ShapeRendererStrategy'
 import { cullingService } from './services/ViewportCullingService'
+import { measurementService } from './services/MeasurementService'
 
 // ── Stores ─────────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,13 @@ let _suppressNextStageClick = false
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
 let _gridVisible = initGridVisible(viewportStore.viewport.scale)
+
+// ── Measurement overlay 狀態 ──────────────────────────────────────────────────
+
+/** 拖曳進行中旗標；由 watchEffect 讀取以決定是否更新覆蓋層。 */
+let _isDragging = false
+/** Alt 鍵是否按下；用於 Alt+Hover 距離量測功能。 */
+let _altHeld    = false
 
 // ── Context Menu ───────────────────────────────────────────────────────────────
 
@@ -154,7 +162,6 @@ function registerShapeEvents(shape: Konva.Shape, elId: string): void {
     e.cancelBubble = true
     if (e.evt.button !== 0) return
     // 若元素屬於群組，第一次點擊選取群組而非子元素（Figma 行為）
-    const el       = elementStore.get(elId)
     const selectId = rootSelectableId(elId)
     if (!e.evt.shiftKey) elementStore.clearSelection()
     elementStore.select(selectId, e.evt.shiftKey)
@@ -225,6 +232,7 @@ function initStage(): void {
   mainLayer = new Konva.Layer()
   uiLayer   = new Konva.Layer({ listening: false })
   stage.add(gridLayer, mainLayer, uiLayer)
+  measurementService.init(uiLayer)
 
   registerStageEvents()
 
@@ -304,7 +312,8 @@ function startDragging(e: Konva.KonvaEventObject<MouseEvent>, world: Point): voi
     const elem = elementStore.get(id)!
     return { id, x: elem.x, y: elem.y }
   })
-  _gesture = { kind: 'dragging', startWorld: world, starts }
+  _isDragging = true
+  _gesture    = { kind: 'dragging', startWorld: world, starts }
 }
 
 function startMarquee(world: Point): void {
@@ -343,6 +352,13 @@ function onMouseMove(): void {
     for (const s of g.starts) {
       elementStore.update(s.id, { x: s.x + dx, y: s.y + dy })
     }
+    // 更新吸附線與尺寸標籤覆蓋層
+    const vp          = viewportStore.viewport
+    const selIds      = elementStore.selectedIds
+    const absSelected = elementStore.selectedElements.map(absoluteCoords)
+    const absOthers   = elementStore.rootElements.filter(el => !selIds.has(el.id))
+    measurementService.showDragging(absSelected, absOthers, vp.scale)
+    uiLayer.batchDraw()
     return
   }
 
@@ -359,6 +375,27 @@ function onMouseMove(): void {
     RENDERER_BY_TOOL.get(toolStore.activeTool)
       ?.updateGhost(g.ghost, g.start, pointerWorld())
     uiLayer.batchDraw()
+    return
+  }
+
+  // 閒置狀態 + Alt 按下：顯示游標所指元素與選取框之間的距離
+  if (_altHeld && elementStore.selectedIds.size > 0) {
+    const ptr = stage.getPointerPosition()
+    const hit = ptr ? stage.getIntersection(ptr) as Konva.Shape | null : null
+    const hitId = hit?.id()
+    if (hitId && !elementStore.selectedIds.has(hitId)) {
+      const hoverEl = elementStore.get(rootSelectableId(hitId))
+      if (hoverEl) {
+        const absSelected = elementStore.selectedElements.map(absoluteCoords)
+        measurementService.showDistanceTo(absSelected, absoluteCoords(hoverEl), viewportStore.viewport.scale)
+        uiLayer.batchDraw()
+        return
+      }
+    }
+    // 游標移到選取元素上或空白處：退回純尺寸標籤顯示
+    const absSelected = elementStore.selectedElements.map(absoluteCoords)
+    measurementService.showIdle(absSelected, viewportStore.viewport.scale)
+    uiLayer.batchDraw()
   }
 }
 
@@ -370,7 +407,10 @@ function onMouseUp(): void {
 
   if (g.kind === 'dragging') {
     if (g.starts.length > 0) elementStore.pushSnapshot()
-    _gesture = { kind: 'idle' }
+    _isDragging = false
+    _gesture    = { kind: 'idle' }
+    // 拖曳結束：清除吸附線，退回純尺寸標籤
+    measurementService.hide()
     return
   }
 
@@ -561,8 +601,18 @@ const _keyCommands = new Map<string, (e: KeyboardEvent) => void>([
 ])
 
 function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Alt') { e.preventDefault(); _altHeld = true; return }
   if (isTypingTarget(getDeepActiveElement())) return
   _keyCommands.get(keyCombo(e))?.(e)
+}
+
+function onKeyup(e: KeyboardEvent): void {
+  if (e.key !== 'Alt') return
+  _altHeld = false
+  // Alt 放開：清除距離線，退回純尺寸標籤
+  const absSelected = elementStore.selectedElements.map(absoluteCoords)
+  measurementService.showIdle(absSelected, viewportStore.viewport.scale)
+  uiLayer.batchDraw()
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────────
@@ -588,6 +638,13 @@ onMounted(() => {
     )
     diffRender(visible, selectedIds, vp.scale)
     drawGrid(vp.scale, w, h)
+
+    // 閒置狀態下同步尺寸標籤；拖曳中由 onMouseMove 直接更新（含吸附線），此處跳過
+    if (!_isDragging) {
+      const absSelected = elementStore.selectedElements.map(absoluteCoords)
+      measurementService.showIdle(absSelected, vp.scale)
+    }
+
     stage.batchDraw()
   })
 
@@ -599,14 +656,17 @@ onMounted(() => {
   })
 
   document.addEventListener('keydown', onKeydown)
-  document.addEventListener('click', closeContextMenu)
+  document.addEventListener('keyup',   onKeyup)
+  document.addEventListener('click',   closeContextMenu)
 })
 
 onUnmounted(() => {
   _resizeObserver?.disconnect()
+  measurementService.destroy()
   stage?.destroy()
   document.removeEventListener('keydown', onKeydown)
-  document.removeEventListener('click', closeContextMenu)
+  document.removeEventListener('keyup',   onKeyup)
+  document.removeEventListener('click',   closeContextMenu)
 })
 </script>
 
