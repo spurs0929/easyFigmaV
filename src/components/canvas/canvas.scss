@@ -33,6 +33,24 @@ $menu-sep-margin-v:  4px;
   min-width:  0;
 }
 
+// ── Text Edit Overlay ─────────────────────────────────────────────────────────
+
+.text-edit-overlay {
+  position:    absolute;
+  box-sizing:  border-box;
+  padding:     0;
+  margin:      0;
+  border:      1px solid #6366f1; // COLOR_SELECTION
+  outline:     none;
+  background:  transparent;
+  color:       #ffffff;
+  resize:      none;
+  overflow:    hidden;
+  white-space: pre-wrap;
+  word-break:  break-word;
+  z-index:     10;
+}
+
 // ── Context Menu ──────────────────────────────────────────────────────────────
 
 .ctx-menu {
