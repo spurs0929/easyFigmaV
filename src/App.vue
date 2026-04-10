@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import '@/styles/global.scss'
-import AppToolbar from '@/components/toolbar/AppToolbar.vue'
+import Toolbar from '@/components/toolbar/Toolbar.vue'
 import LayerPanel from '@/components/LayerPanel/LayerPanel.vue'
 import CanvasArea from '@/components/canvas/canvas.vue'
 import PropertiesPanel from '@/components/properties/PropertiesPanel.vue'
@@ -8,7 +8,7 @@ import PropertiesPanel from '@/components/properties/PropertiesPanel.vue'
 
 <template>
   <div class="app-layout" @contextmenu.prevent>
-    <AppToolbar />
+    <Toolbar />
     <LayerPanel />
     <CanvasArea />
     <PropertiesPanel />

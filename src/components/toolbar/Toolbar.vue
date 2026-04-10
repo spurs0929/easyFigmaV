@@ -19,8 +19,7 @@ const toolStore = useToolStore()
 // ── OS 偵測（快捷鍵 Badge 顯示 ⌘ 或 Ctrl）─────────────────────────────────────
 
 const isMac = (() => {
-  const uad = (navigator as Navigator & { userAgentData?: { platform: string } })
-    .userAgentData
+  const uad = (navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData
   if (uad?.platform) return uad.platform.toLowerCase().includes('mac')
   return navigator.platform.toUpperCase().startsWith('MAC')
 })()
@@ -64,8 +63,8 @@ async function toggleDropdown(group: ToolGroup, event: MouseEvent): Promise<void
 
   // 修正：anchor 加 fallback，防止 .btn-row 不存在時傳入 null 造成 PrimeVue 內部錯誤
   const anchor =
-    (event.currentTarget as HTMLElement).closest('.btn-row') as HTMLElement
-    ?? (event.currentTarget as HTMLElement)
+    ((event.currentTarget as HTMLElement).closest('.btn-row') as HTMLElement) ??
+    (event.currentTarget as HTMLElement)
 
   if (popoverGroup.value === group) {
     // 同群組 → 關閉；onPopoverHide 負責清空 popoverGroup
@@ -101,7 +100,7 @@ function selectSubTool(type: ToolType): void {
 // ── 樣板輔助 ──────────────────────────────────────────────────────────────────
 
 function isGroupActive(group: ToolGroup): boolean {
-  return TOOL_GROUPS[group].some(t => t.type === toolStore.activeTool)
+  return TOOL_GROUPS[group].some((t) => t.type === toolStore.activeTool)
 }
 
 function buildShortcutLabel(sc: ShortcutKey): string {
@@ -145,11 +144,9 @@ onUnmounted(() => {
 
 <template>
   <aside class="toolbar">
-
     <template v-for="(entry, index) in groups" :key="entry.group">
       <div class="tool-group">
         <div class="btn-row">
-
           <!-- 主工具按鈕 -->
           <button
             v-tooltip.right="{
@@ -171,10 +168,7 @@ onUnmounted(() => {
               />
             </svg>
 
-            <span
-              v-if="shortcutBadge(activeToolPerGroup[entry.group])"
-              class="shortcut-badge"
-            >
+            <span v-if="shortcutBadge(activeToolPerGroup[entry.group])" class="shortcut-badge">
               {{ shortcutBadge(activeToolPerGroup[entry.group]) }}
             </span>
           </button>
@@ -199,7 +193,6 @@ onUnmounted(() => {
               />
             </svg>
           </button>
-
         </div>
       </div>
 
@@ -209,12 +202,7 @@ onUnmounted(() => {
     </template>
 
     <!-- PrimeVue Popover：單一實例，動態切換子工具內容 -->
-    <Popover
-      ref="popoverRef"
-      :dismissable="true"
-      class="toolbar-popover"
-      @hide="onPopoverHide"
-    >
+    <Popover ref="popoverRef" :dismissable="true" class="toolbar-popover" @hide="onPopoverHide">
       <div class="dropdown" role="menu">
         <button
           v-for="tool in popoverTools"
@@ -244,8 +232,7 @@ onUnmounted(() => {
         </button>
       </div>
     </Popover>
-
   </aside>
 </template>
 
-<style src="./AppToolbar.scss" lang="scss" />
+<style src="./Toolbar.scss" lang="scss" />
