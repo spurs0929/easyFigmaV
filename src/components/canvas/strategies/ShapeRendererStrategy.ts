@@ -267,7 +267,27 @@ class TextRenderer implements DrawableRenderer {
   }
   updateGhost(ghost: Konva.Shape, start: Point, current: Point): void { ghost.setAttrs(rectGeom(start, current)) }
   createElement(_tool: ToolType, start: Point, end: Point): Omit<CanvasElement, 'id' | 'name'> | null {
-    return rectBoundedElement(ElementKind.Text, start, end, { type: 'solid', color: 'transparent' })
+    const { x, y, width, height } = rectGeom(start, end)
+    // click（無拖曳）→ 建立預設尺寸的文字框
+    if (width < 2 && height < 2) {
+      return {
+        ...elementDefaults(),
+        kind: ElementKind.Text,
+        x: start.x, y: start.y,
+        width: 200, height: ELEMENT_DEFAULT_FONT_SIZE * 1.5,
+        fill: { type: 'solid', color: 'transparent' },
+        stroke: ELEMENT_DEFAULT_STROKE,
+        strokeWidth: 0,
+      }
+    }
+    return {
+      ...elementDefaults(),
+      kind: ElementKind.Text,
+      x, y, width, height,
+      fill: { type: 'solid', color: 'transparent' },
+      stroke: ELEMENT_DEFAULT_STROKE,
+      strokeWidth: 0,
+    }
   }
 }
 
