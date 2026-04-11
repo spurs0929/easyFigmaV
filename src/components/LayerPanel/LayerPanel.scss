@@ -1,3 +1,5 @@
+@use 'sass:color';
+
 $color-bg:       #1e1e1e;
 $color-border:   #2a2a2a;
 $color-text:     #ccc;
@@ -77,7 +79,7 @@ $indent-step:    16px; // 每層縮排量（px），與 template :style paddingL
     color: #fff;
 
     .layer-row__icon {
-      color: lighten($color-icon, 20%);
+      color: color.adjust($color-icon, $lightness: 20%);
     }
   }
 
