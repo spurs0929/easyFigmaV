@@ -1,0 +1,93 @@
+// ── 釘針 ─────────────────────────────────────────────────────────────────────
+
+.comment-pin {
+  position:   absolute;
+  transform:  translate(-50%, -100%);
+  background: none;
+  border:     none;
+  padding:    0;
+  cursor:     pointer;
+  transition: transform 0.1s ease;
+  z-index:    20;
+
+  &:hover         { transform: translate(-50%, -100%) scale(1.15); }
+  &:focus-visible {
+    outline:        2px solid #6366f1;
+    outline-offset: 2px;
+    border-radius:  50%;
+  }
+  &--resolved { opacity: 0.55; }
+}
+
+// ── 彈出框 ────────────────────────────────────────────────────────────────────
+
+.comment-popover {
+  position:       fixed;
+  z-index:        200;
+  width:          240px; // 須與 CommentPin.vue 中的 POPOVER_WIDTH 保持一致
+  background:     #1e1e1e;
+  border:         1px solid #333;
+  border-radius:  8px;
+  box-shadow:     0 8px 24px rgba(0, 0, 0, 0.6);
+  padding:        10px;
+  display:        flex;
+  flex-direction: column;
+  gap:            8px;
+
+  &__textarea {
+    width:         100%;
+    box-sizing:    border-box;
+    background:    #141414;
+    border:        1px solid #444;
+    border-radius: 4px;
+    color:         #c9d1d9;
+    font-size:     13px;
+    font-family:   inherit;
+    padding:       6px 8px;
+    resize:        vertical;
+    outline:       none;
+
+    &:focus { border-color: #6366f1; }
+  }
+
+  &__actions {
+    display:         flex;
+    justify-content: space-between;
+    align-items:     center;
+    gap:             6px;
+  }
+
+  &__actions-right {
+    display: flex;
+    gap:     6px;
+  }
+
+  &__btn {
+    font-size:     12px;
+    font-family:   inherit;
+    padding:       4px 10px;
+    border-radius: 4px;
+    border:        none;
+    cursor:        pointer;
+    transition:    background 0.1s;
+
+    &--resolve {
+      background: transparent;
+      color:      #9ca3af;
+      &:hover { color: #fff; }
+    }
+
+    &--delete {
+      background: transparent;
+      color:      #f87171;
+      &:hover { background: rgba(248, 113, 113, 0.1); }
+    }
+
+    &--submit {
+      background: #6366f1;
+      color:      #fff;
+      &:hover:not(:disabled) { background: #4f46e5; }
+      &:disabled { opacity: 0.4; cursor: not-allowed; }
+    }
+  }
+}

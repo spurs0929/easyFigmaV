@@ -26,12 +26,15 @@ import {
 } from './strategies/ShapeRendererStrategy'
 import { cullingService } from './services/ViewportCullingService'
 import { measurementService } from './services/MeasurementService'
+import { useCommentStore } from '@/store/comment'
+import CommentPin from './CommentPin.vue'
 
 // ── Stores ─────────────────────────────────────────────────────────────────────
 
 const elementStore  = useElementStore()
 const viewportStore = useViewportStore()
 const toolStore     = useToolStore()
+const commentStore  = useCommentStore()
 
 // ── Container ref ──────────────────────────────────────────────────────────────
 
@@ -69,6 +72,23 @@ let _gridVisible = initGridVisible(viewportStore.viewport.scale)
 let _isDragging = false
 /** Alt 鍵是否按下；用於 Alt+Hover 距離量測功能。 */
 let _altHeld    = false
+
+// ── Comment Placement ──────────────────────────────────────────────────────────
+
+/**
+ * 最近一次新增的 comment id，用於讓對應 CommentPin 自動開啟 popover。
+ * 在 nextTick 後清空，確保只觸發一次（CommentPin.onMounted 已消費 autoOpen）。
+ * 非 null 時作為防重複點擊守衛：前一個 pin 尚未消費時忽略新放置。
+ */
+const _autoOpenCommentId = ref<string | null>(null)
+
+function placeComment(world: Point): void {
+  if (_autoOpenCommentId.value !== null) return
+  const comment = commentStore.add(world.x, world.y)
+  _autoOpenCommentId.value = comment.id
+  nextTick(() => { _autoOpenCommentId.value = null })
+  toolStore.setTool(ToolType.Move)
+}
 
 // ── Text Editing ───────────────────────────────────────────────────────────────
 
@@ -404,6 +424,8 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
   if (tool === ToolType.Move && e.target !== stage)  { startDragging(e, world); return }
   // Move / RegionSelect 點擊空白 → 選取框
   if (tool === ToolType.Move || tool === ToolType.RegionSelect) { startMarquee(world); return }
+  // Comment 工具 → 放置釘針
+  if (tool === ToolType.Comment) { placeComment(world); return }
   // 其餘工具 → 繪製
   startDrawing(tool, world)
 }
@@ -841,6 +863,18 @@ onUnmounted(() => {
       </template>
     </ul>
     </Teleport>
+
+    <!-- Comment overlay：每個評論渲染一個釘針，跟隨 viewport 座標 -->
+    <CommentPin
+      v-for="comment in commentStore.comments"
+      :key="comment.id"
+      :comment="comment"
+      :viewport="viewportStore.viewport"
+      :auto-open="comment.id === _autoOpenCommentId"
+      @update-text="commentStore.updateText"
+      @toggle-resolved="commentStore.toggleResolved"
+      @delete="commentStore.remove"
+    />
 
     <!-- 文字編輯 overlay：絕對定位於 canvas container，跟隨 viewport 座標即時更新 -->
     <textarea
