@@ -27,7 +27,7 @@ import {
 import { cullingService } from './services/ViewportCullingService'
 import { measurementService } from './services/MeasurementService'
 import { useCommentStore } from '@/store/comment'
-import CommentPin from './CommentPin.vue'
+import CommentOverlay from './CommentOverlay.vue'
 
 // ── Stores ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,7 @@ const commentStore  = useCommentStore()
 // ── Container ref ──────────────────────────────────────────────────────────────
 
 const containerRef = ref<HTMLDivElement | null>(null)
+const commentOverlayRect = ref({ left: 0, top: 0, width: 0, height: 0 })
 
 // ── Konva objects ──────────────────────────────────────────────────────────────
 
@@ -77,17 +78,14 @@ let _altHeld    = false
 
 /**
  * 最近一次新增的 comment id，用於讓對應 CommentPin 自動開啟 popover。
- * 在 nextTick 後清空，確保只觸發一次（CommentPin.onMounted 已消費 autoOpen）。
- * 非 null 時作為防重複點擊守衛：前一個 pin 尚未消費時忽略新放置。
+ * autoOpen 是 one-time flag（CommentPin 只在 onMounted 消費一次），
+ * 因此不需主動清空：放置下一個評論時自然覆寫，舊 Pin 已 mounted 不受影響。
  */
 const _autoOpenCommentId = ref<string | null>(null)
 
 function placeComment(world: Point): void {
-  if (_autoOpenCommentId.value !== null) return
   const comment = commentStore.add(world.x, world.y)
   _autoOpenCommentId.value = comment.id
-  nextTick(() => { _autoOpenCommentId.value = null })
-  toolStore.setTool(ToolType.Move)
 }
 
 // ── Text Editing ───────────────────────────────────────────────────────────────
@@ -366,6 +364,7 @@ function initStage(): void {
   const w  = el.clientWidth
   const h  = el.clientHeight
   viewportStore.setContainerSize(w, h)
+  syncCommentOverlayRect()
 
   stage     = new Konva.Stage({ container: el, width: w, height: h })
   gridLayer = new Konva.Layer({ listening: false })
@@ -381,8 +380,21 @@ function initStage(): void {
     stage.width(r.width)
     stage.height(r.height)
     viewportStore.setContainerSize(r.width, r.height)
+    syncCommentOverlayRect()
   })
   _resizeObserver.observe(el)
+}
+
+function syncCommentOverlayRect(): void {
+  const el = containerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  commentOverlayRect.value = {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+  }
 }
 
 // ── Stage Events ───────────────────────────────────────────────────────────────
@@ -409,6 +421,10 @@ function registerStageEvents(): void {
     if (e.evt.button === 0 && e.target === stage) elementStore.clearSelection()
   })
 
+}
+
+function onContainerWheel(e: WheelEvent): void {
+  e.preventDefault()
 }
 
 // ── Gesture Handlers ───────────────────────────────────────────────────────────
@@ -804,6 +820,9 @@ onMounted(() => {
   document.addEventListener('keydown', onKeydown)
   document.addEventListener('keyup',   onKeyup)
   document.addEventListener('click',   closeContextMenu)
+  window.addEventListener('resize', syncCommentOverlayRect)
+  window.addEventListener('scroll', syncCommentOverlayRect, true)
+  containerRef.value?.addEventListener('wheel', onContainerWheel, { passive: false })
 })
 
 onUnmounted(() => {
@@ -813,6 +832,9 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown)
   document.removeEventListener('keyup',   onKeyup)
   document.removeEventListener('click',   closeContextMenu)
+  window.removeEventListener('resize', syncCommentOverlayRect)
+  window.removeEventListener('scroll', syncCommentOverlayRect, true)
+  containerRef.value?.removeEventListener('wheel', onContainerWheel)
 })
 </script>
 
@@ -865,12 +887,11 @@ onUnmounted(() => {
     </Teleport>
 
     <!-- Comment overlay：每個評論渲染一個釘針，跟隨 viewport 座標 -->
-    <CommentPin
-      v-for="comment in commentStore.comments"
-      :key="comment.id"
-      :comment="comment"
+    <CommentOverlay
+      :comments="commentStore.comments"
       :viewport="viewportStore.viewport"
-      :auto-open="comment.id === _autoOpenCommentId"
+      :auto-open-comment-id="_autoOpenCommentId"
+      :canvas-rect="commentOverlayRect"
       @update-text="commentStore.updateText"
       @toggle-resolved="commentStore.toggleResolved"
       @delete="commentStore.remove"

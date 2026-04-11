@@ -1,4 +1,4 @@
-import { ref, readonly } from 'vue'
+import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { type CanvasComment, newCommentId } from '@/types/comment'
 
@@ -10,12 +10,15 @@ function isValidComment(v: unknown): v is CanvasComment {
   if (!v || typeof v !== 'object') return false
   const c = v as Record<string, unknown>
   return (
-    typeof c.id        === 'string'  &&
-    typeof c.worldX    === 'number'  && Number.isFinite(c.worldX)    &&
-    typeof c.worldY    === 'number'  && Number.isFinite(c.worldY)    &&
-    typeof c.text      === 'string'  &&
-    typeof c.resolved  === 'boolean' &&
-    typeof c.createdAt === 'number'  && c.createdAt > 0
+    typeof c.id === 'string' &&
+    typeof c.worldX === 'number' &&
+    Number.isFinite(c.worldX) &&
+    typeof c.worldY === 'number' &&
+    Number.isFinite(c.worldY) &&
+    typeof c.text === 'string' &&
+    typeof c.resolved === 'boolean' &&
+    typeof c.createdAt === 'number' &&
+    c.createdAt > 0
   )
 }
 
@@ -44,9 +47,12 @@ function saveToStorage(comments: CanvasComment[]): void {
 export const useCommentStore = defineStore('comment', () => {
   const _comments = ref<CanvasComment[]>(loadFromStorage())
 
-  /** 唯讀對外介面（開發模式下修改會發出 warning）。 */
-  const comments = readonly(_comments)
-
+  /**
+   * 對外暴露唯讀清單。
+   * 這裡回傳淺拷貝，確保 push/splice 後列表本身會重新求值，
+   * 讓 v-for 能正確收到新增/刪除的變化。
+   */
+  const comments = computed<readonly CanvasComment[]>(() => _comments.value.slice())
   // 防抖寫入：累積 300ms 內的變更後再序列化。
   let _debounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -71,11 +77,11 @@ export const useCommentStore = defineStore('comment', () => {
 
   function add(worldX: number, worldY: number): CanvasComment {
     const comment: CanvasComment = {
-      id:        newCommentId(),
+      id: newCommentId(),
       worldX,
       worldY,
-      text:      '',
-      resolved:  false,
+      text: '',
+      resolved: false,
       createdAt: Date.now(),
     }
     _comments.value.push(comment)
@@ -86,7 +92,7 @@ export const useCommentStore = defineStore('comment', () => {
   // ── 更新文字 ────────────────────────────────────────────────────────────────
 
   function updateText(id: string, text: string): boolean {
-    const target = _comments.value.find(c => c.id === id)
+    const target = _comments.value.find((c) => c.id === id)
     if (!target) {
       if (import.meta.env.DEV) console.warn(`[CommentStore] updateText: id "${id}" 不存在`)
       return false
@@ -99,7 +105,7 @@ export const useCommentStore = defineStore('comment', () => {
   // ── 切換解決狀態 ────────────────────────────────────────────────────────────
 
   function toggleResolved(id: string): boolean {
-    const target = _comments.value.find(c => c.id === id)
+    const target = _comments.value.find((c) => c.id === id)
     if (!target) {
       if (import.meta.env.DEV) console.warn(`[CommentStore] toggleResolved: id "${id}" 不存在`)
       return false
@@ -112,7 +118,7 @@ export const useCommentStore = defineStore('comment', () => {
   // ── 刪除 ───────────────────────────────────────────────────────────────────
 
   function remove(id: string): boolean {
-    const idx = _comments.value.findIndex(c => c.id === id)
+    const idx = _comments.value.findIndex((c) => c.id === id)
     if (idx === -1) {
       if (import.meta.env.DEV) console.warn(`[CommentStore] remove: id "${id}" 不存在`)
       return false
