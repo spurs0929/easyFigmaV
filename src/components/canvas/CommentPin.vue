@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import type { CanvasComment } from '@/types/comment'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Viewport } from '@/store/viewport'
+import type { CanvasComment } from '@/types/comment'
 
 const POPOVER_WIDTH = 240
 const POPOVER_OFFSET_X = 6
@@ -135,10 +135,19 @@ function onKeydown(e: KeyboardEvent): void {
     onSubmit()
   }
 }
+
+function onWheel(e: WheelEvent): void {
+  if (e.ctrlKey || e.metaKey) e.preventDefault()
+  e.stopPropagation()
+}
 </script>
 
 <template>
-  <div class="comment-pin-layer" :style="{ left: `${screenPos.x}px`, top: `${screenPos.y}px` }">
+  <div
+    class="comment-pin-layer"
+    :style="{ left: `${screenPos.x}px`, top: `${screenPos.y}px` }"
+    @wheel="onWheel"
+  >
     <button
       ref="pinRef"
       class="comment-pin"
@@ -146,6 +155,7 @@ function onKeydown(e: KeyboardEvent): void {
       :aria-label="`評論：${comment.text || '（空）'}`"
       :aria-expanded="open"
       @click.stop="toggleOpen"
+      @wheel="onWheel"
     >
       <svg width="20" height="24" viewBox="0 0 20 24" fill="none" aria-hidden="true">
         <path
@@ -165,6 +175,7 @@ function onKeydown(e: KeyboardEvent): void {
         class="comment-popover"
         :style="popoverStyle"
         @click.stop
+        @wheel="onWheel"
       >
         <textarea
           ref="textareaRef"
