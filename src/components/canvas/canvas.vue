@@ -826,6 +826,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  commentStore.flush()
   _resizeObserver?.disconnect()
   measurementService.destroy()
   stage?.destroy()

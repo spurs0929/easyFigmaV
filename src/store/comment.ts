@@ -1,10 +1,8 @@
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { type CanvasComment, newCommentId } from '@/types/comment'
 
 const STORAGE_KEY = 'easyfigma_comments'
-
-// ── Storage ────────────────────────────────────────────────────────────────────
 
 function isValidComment(v: unknown): v is CanvasComment {
   if (!v || typeof v !== 'object') return false
@@ -34,46 +32,50 @@ function loadFromStorage(): CanvasComment[] {
   }
 }
 
-function saveToStorage(comments: CanvasComment[]): void {
+function writeToStorage(comments: readonly CanvasComment[]): void {
   try {
+    if (comments.length === 0) {
+      localStorage.removeItem(STORAGE_KEY)
+      return
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(comments))
   } catch (e) {
-    console.error('[CommentStore] localStorage 寫入失敗（可能超出配額）', e)
+    console.error('[CommentStore] localStorage write failed', e)
   }
 }
 
-// ── Store ──────────────────────────────────────────────────────────────────────
+let _lifecycleBound = false
+let _flushComments: (() => void) | null = null
+
+function bindLifecycle(flush: () => void): void {
+  _flushComments = flush
+  if (_lifecycleBound) return
+
+  const flushCurrent = (): void => _flushComments?.()
+
+  window.addEventListener('beforeunload', flushCurrent)
+  window.addEventListener('pagehide', flushCurrent)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushCurrent()
+  })
+
+  _lifecycleBound = true
+}
 
 export const useCommentStore = defineStore('comment', () => {
   const _comments = ref<CanvasComment[]>(loadFromStorage())
 
-  /**
-   * 對外暴露唯讀清單。
-   * 這裡回傳淺拷貝，確保 push/splice 後列表本身會重新求值，
-   * 讓 v-for 能正確收到新增/刪除的變化。
-   */
   const comments = computed<readonly CanvasComment[]>(() => _comments.value.slice())
-  // 防抖寫入：累積 300ms 內的變更後再序列化。
-  let _debounceTimer: ReturnType<typeof setTimeout> | null = null
 
-  function _markDirty(): void {
-    if (_debounceTimer !== null) clearTimeout(_debounceTimer)
-    _debounceTimer = setTimeout(() => saveToStorage(_comments.value), 300)
-  }
-
-  /** 立即寫入，清除待執行的防抖計時器。供 beforeunload / store dispose 呼叫。 */
   function flush(): void {
-    if (_debounceTimer !== null) {
-      clearTimeout(_debounceTimer)
-      _debounceTimer = null
-    }
-    saveToStorage(_comments.value)
+    writeToStorage(_comments.value)
   }
 
-  // 頁面關閉前強制同步，避免丟失最後 300ms 內的變更
-  window.addEventListener('beforeunload', flush, { once: false })
+  function persist(): void {
+    flush()
+  }
 
-  // ── 新增 ───────────────────────────────────────────────────────────────────
+  bindLifecycle(flush)
 
   function add(worldX: number, worldY: number): CanvasComment {
     const comment: CanvasComment = {
@@ -85,46 +87,40 @@ export const useCommentStore = defineStore('comment', () => {
       createdAt: Date.now(),
     }
     _comments.value.push(comment)
-    _markDirty()
+    persist()
     return comment
   }
-
-  // ── 更新文字 ────────────────────────────────────────────────────────────────
 
   function updateText(id: string, text: string): boolean {
     const target = _comments.value.find((c) => c.id === id)
     if (!target) {
-      if (import.meta.env.DEV) console.warn(`[CommentStore] updateText: id "${id}" 不存在`)
+      if (import.meta.env.DEV) console.warn(`[CommentStore] updateText: id "${id}" does not exist`)
       return false
     }
     target.text = text
-    _markDirty()
+    persist()
     return true
   }
-
-  // ── 切換解決狀態 ────────────────────────────────────────────────────────────
 
   function toggleResolved(id: string): boolean {
     const target = _comments.value.find((c) => c.id === id)
     if (!target) {
-      if (import.meta.env.DEV) console.warn(`[CommentStore] toggleResolved: id "${id}" 不存在`)
+      if (import.meta.env.DEV) console.warn(`[CommentStore] toggleResolved: id "${id}" does not exist`)
       return false
     }
     target.resolved = !target.resolved
-    _markDirty()
+    persist()
     return true
   }
-
-  // ── 刪除 ───────────────────────────────────────────────────────────────────
 
   function remove(id: string): boolean {
     const idx = _comments.value.findIndex((c) => c.id === id)
     if (idx === -1) {
-      if (import.meta.env.DEV) console.warn(`[CommentStore] remove: id "${id}" 不存在`)
+      if (import.meta.env.DEV) console.warn(`[CommentStore] remove: id "${id}" does not exist`)
       return false
     }
     _comments.value.splice(idx, 1)
-    _markDirty()
+    persist()
     return true
   }
 
