@@ -397,7 +397,9 @@ class TextRenderer implements DrawableRenderer {
         y: start.y,
         width: 200,
         height: ELEMENT_DEFAULT_FONT_SIZE * 1.5,
-        fill: { type: 'solid', color: 'transparent' },
+        text: 'Text',
+        // Text 的 fill 是實際字色，不能像一般圖形預設透明，否則一旦失去選取就會看起來消失。
+        fill: ELEMENT_DEFAULT_FILL,
         stroke: ELEMENT_DEFAULT_STROKE,
         strokeWidth: 0,
       }
@@ -409,7 +411,8 @@ class TextRenderer implements DrawableRenderer {
       y,
       width,
       height,
-      fill: { type: 'solid', color: 'transparent' },
+      text: 'Text',
+      fill: ELEMENT_DEFAULT_FILL,
       stroke: ELEMENT_DEFAULT_STROKE,
       strokeWidth: 0,
     }

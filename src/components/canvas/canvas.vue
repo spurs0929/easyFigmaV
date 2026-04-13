@@ -6,7 +6,7 @@ import { useViewportStore } from '@/store/viewport'
 import { useToolStore } from '@/store/tool'
 import {
   type CanvasElement, type VectorPoint, ElementKind, newElementId, normalizeVectorPath,
-  ELEMENT_DEFAULT_FONT_SIZE, ELEMENT_DEFAULT_FONT_FAMILY,
+  ELEMENT_DEFAULT_FONT_SIZE, ELEMENT_DEFAULT_FONT_FAMILY, ELEMENT_DEFAULT_FILL,
 } from '@/types/element'
 import { ToolType } from '@/types/tool'
 import { isTypingTarget, getDeepActiveElement } from '@/constants/canvas'
@@ -107,6 +107,8 @@ const textareaRef   = ref<HTMLTextAreaElement | null>(null)
  * 若未來加入「即時預覽」，cancelTextEdit 須改為主動 update(id, _editOldText)。
  */
 let _editOldText = ''
+const editingTextDraft = ref('')
+let _pendingTextEditTimer: number | null = null
 
 const editingTextStyle = computed(() => {
   const id = editingTextId.value
@@ -119,8 +121,8 @@ const editingTextStyle = computed(() => {
   const absEl  = absoluteCoords(el)
   const fontPx = (el.fontSize ?? ELEMENT_DEFAULT_FONT_SIZE) * vp.scale
   const style: Record<string, string> = {
-    left:       `${absEl.x * vp.scale + vp.x}px`,
-    top:        `${absEl.y * vp.scale + vp.y}px`,
+    left:       `${commentOverlayRect.value.left + absEl.x * vp.scale + vp.x}px`,
+    top:        `${commentOverlayRect.value.top + absEl.y * vp.scale + vp.y}px`,
     // 動態下限：至少 fontPx * 2，避免縮放後 textarea 幾乎不可見
     width:      `${Math.max(absEl.width * vp.scale, fontPx * 2)}px`,
     minHeight:  `${fontPx * 1.5}px`,
@@ -128,6 +130,8 @@ const editingTextStyle = computed(() => {
     fontFamily: el.fontFamily ?? ELEMENT_DEFAULT_FONT_FAMILY,
     fontWeight: String(el.fontWeight ?? 400),
     lineHeight: '1.5',
+    position:   'fixed',
+    zIndex:     '2000',
   }
   if (el.rotation) {
     style.transform       = `rotate(${el.rotation}deg)`
@@ -137,50 +141,76 @@ const editingTextStyle = computed(() => {
 })
 
 function _exitTextEdit(id: string): void {
+  if (_pendingTextEditTimer !== null) {
+    window.clearTimeout(_pendingTextEditTimer)
+    _pendingTextEditTimer = null
+  }
   // editingTextId 先清空，再執行 DOM 副作用。
   // Vue ref 賦值同步，_exitTextEdit 返回後才 flush DOM 並移除 textarea。
   // 若移除 textarea 觸發 blur → commitTextEdit，此時 editingTextId 已為 null，
   // commitTextEdit 開頭守衛 `if (!id) return` 立即截斷，不重複執行。
   editingTextId.value = null
+  editingTextDraft.value = ''
   _editOldText        = ''
-  _pool.get(id)?.show()
   mainLayer.batchDraw()
 }
 
 function startTextEdit(elId: string): void {
+  if (_pendingTextEditTimer !== null) {
+    window.clearTimeout(_pendingTextEditTimer)
+    _pendingTextEditTimer = null
+  }
+
+  if (editingTextId.value === elId) {
+    nextTick(() => {
+      textareaRef.value?.focus()
+      textareaRef.value?.select()
+    })
+    return
+  }
+
   // 若有正在進行的編輯，先 commit 避免靜默丟棄。
-  // commitTextEdit → _exitTextEdit 已清空 editingTextId，
-  // 若因此觸發 blur → 第二次 commitTextEdit，守衛會攔截，不構成遞迴。
+  // 切換到另一個 Text 時必須強制結束當前 session，不能被初始 blur 保護擋下。
   if (editingTextId.value !== null) commitTextEdit()
 
   const el = elementStore.get(elId)
   if (!el || el.kind !== ElementKind.Text) return
 
-  _editOldText        = el.text ?? ''
+  // 對使用者來說，畫布上看到的是 renderer 的顯示值；編輯框也要以相同內容開啟，
+  // 否則新建 Text 會顯示為空白、甚至在焦點抖動時像是直接消失。
+  _editOldText        = el.text ?? 'Text'
+  editingTextDraft.value = _editOldText
   editingTextId.value = elId
-  _pool.get(elId)?.hide()
+  // 新建文字與雙擊進入編輯時，瀏覽器可能還在處理同一串 click/dblclick 焦點事件；
+  // 短時間內的 blur 視為雜訊，不應立刻結束編輯。
   mainLayer.batchDraw()
 
   nextTick(() => {
     const ta = textareaRef.value
     if (!ta) return
-    ta.value = _editOldText
+    ta.value = editingTextDraft.value
     _autoResizeTextarea(ta)
-    ta.focus()
-    ta.select()
+    window.requestAnimationFrame(() => {
+      ta.focus()
+      ta.select()
+    })
   })
 }
 
 function commitTextEdit(): void {
   const id = editingTextId.value
   if (!id) return
-  const newText = textareaRef.value?.value ?? ''
+  const newText = editingTextDraft.value
   // 只在文字實際改變且元素仍存在時才更新 store 並推 snapshot
   if (newText !== _editOldText && elementStore.get(id)) {
     elementStore.update(id, { text: newText })
     elementStore.pushSnapshot()
   }
   _exitTextEdit(id)
+}
+
+function onTextareaBlur(): void {
+  commitTextEdit()
 }
 
 /**
@@ -195,13 +225,59 @@ function cancelTextEdit(): void {
   _exitTextEdit(id)
 }
 
+function scheduleTextEdit(elId: string): void {
+  // 新建文字後若只用 nextTick，常會撞上同一次 click 的後續事件，
+  // 使 textarea 剛 focus 又立刻 blur。延到下一個 macrotask 再進入編輯可避開這個焦點競爭。
+  if (_pendingTextEditTimer !== null) window.clearTimeout(_pendingTextEditTimer)
+  _pendingTextEditTimer = window.setTimeout(() => {
+    _pendingTextEditTimer = null
+    startTextEdit(elId)
+  }, 0)
+}
+
+function beginTextEdit(elId: string): void {
+  const selectId = rootSelectableId(elId)
+  elementStore.clearSelection()
+  elementStore.select(selectId)
+  _suppressNextStageClick = true
+  scheduleTextEdit(elId)
+}
+
+function createTextElementAt(world: Point): CanvasElement {
+  return {
+    id: newElementId(),
+    name: defaultElementName(ElementKind.Text),
+    kind: ElementKind.Text,
+    x: world.x,
+    y: world.y,
+    width: 200,
+    height: ELEMENT_DEFAULT_FONT_SIZE * 1.5,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    childIds: [],
+    parentId: undefined,
+    text: 'Text',
+    fontSize: ELEMENT_DEFAULT_FONT_SIZE,
+    fontFamily: ELEMENT_DEFAULT_FONT_FAMILY,
+    fill: ELEMENT_DEFAULT_FILL,
+    stroke: { type: 'solid', color: '#6366f1' },
+    strokeWidth: 0,
+  }
+}
+
 function onTextareaKeydown(e: KeyboardEvent): void {
   e.stopPropagation()
   if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit() }
 }
 
 function onTextareaInput(e: Event): void {
-  _autoResizeTextarea(e.target as HTMLTextAreaElement)
+  const ta = e.target as HTMLTextAreaElement
+  editingTextDraft.value = ta.value
+  _autoResizeTextarea(ta)
 }
 
 function _autoResizeTextarea(ta: HTMLTextAreaElement): void {
@@ -539,12 +615,9 @@ function registerShapeEvents(shape: Konva.Shape, elId: string): void {
     if (e.evt.button !== 0) return
     // 若元素屬於群組，第一次點擊選取群組而非子元素（Figma 行為）
     const selectId = rootSelectableId(elId)
+    const selectedRootId = rootSelectableId(elId)
     if (!e.evt.shiftKey) elementStore.clearSelection()
-    elementStore.select(selectId, e.evt.shiftKey)
-  })
-  shape.on('dblclick', () => {
-    const el = elementStore.get(elId)
-    if (el?.kind === ElementKind.Text) startTextEdit(elId)
+    elementStore.select(selectedRootId, e.evt.shiftKey)
   })
 }
 
@@ -677,15 +750,35 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
   if (e.evt.button !== 0 && e.evt.button !== 1) return
   const tool  = toolStore.activeTool
   const world = pointerWorld()
+  const targetId = e.target !== stage ? (e.target as Konva.Shape).id() : null
+  const targetEl = targetId ? elementStore.get(targetId) : undefined
 
   // 中鍵 or Hand 工具 → 平移
   if (e.evt.button === 1 || tool === ToolType.Hand) { startPanning(); return }
+  if (tool === ToolType.Text && targetEl?.kind === ElementKind.Text) {
+    toolStore.setTool(ToolType.Move)
+    beginTextEdit(targetEl.id)
+    return
+  }
+  if (tool === ToolType.Move && targetEl?.kind === ElementKind.Text && e.evt.detail >= 2) {
+    beginTextEdit(targetEl.id)
+    return
+  }
   // Move 工具點擊 shape → 拖曳
   if (tool === ToolType.Move && e.target !== stage)  { startDragging(e, world); return }
   // Move / RegionSelect 點擊空白 → 選取框
   if (tool === ToolType.Move || tool === ToolType.RegionSelect) { startMarquee(world); return }
   // Comment 工具 → 放置釘針
   if (tool === ToolType.Comment) { placeComment(world); return }
+  if (tool === ToolType.Text) {
+    if (e.target !== stage) return
+
+    const newEl = createTextElementAt(world)
+    elementStore.add(newEl)
+    toolStore.setTool(ToolType.Move)
+    beginTextEdit(newEl.id)
+    return
+  }
   if (tool === ToolType.Pen) {
     _suppressNextStageClick = true
     // Pen 是多步驟手勢：第一次進入建立模式，後續點擊則追加節點。
@@ -855,10 +948,12 @@ function onMouseUp(): void {
     g.ghost.destroy()
     uiLayer.batchDraw()
     _gesture = { kind: 'idle' }
+    if (newEl?.kind === ElementKind.Text) _suppressNextStageClick = true
     toolStore.setTool(ToolType.Move)
-    // 繪製文字元素後自動進入編輯模式（nextTick 等 watchEffect 建立 Konva shape 後再 hide）
+    // 繪製文字元素後自動進入編輯模式。
+    // 這裡不能只用 nextTick，否則可能被同一次 click 事件的焦點變更立刻打斷。
     if (newEl?.kind === ElementKind.Text) {
-      nextTick(() => startTextEdit(newEl.id))
+      nextTick(() => scheduleTextEdit(newEl.id))
     }
     return
   }
@@ -1221,15 +1316,21 @@ onUnmounted(() => {
     />
 
     <!-- 文字編輯 overlay：絕對定位於 canvas container，跟隨 viewport 座標即時更新 -->
-    <textarea
-      v-if="editingTextId"
-      ref="textareaRef"
-      class="text-edit-overlay"
-      :style="editingTextStyle"
-      @blur="commitTextEdit"
-      @keydown="onTextareaKeydown"
-      @input="onTextareaInput"
-    />
+    <Teleport to="body">
+      <textarea
+        v-if="editingTextId"
+        ref="textareaRef"
+        class="text-edit-overlay"
+        :style="editingTextStyle"
+        :value="editingTextDraft"
+        autofocus
+        @mousedown.stop
+        @click.stop
+        @blur="onTextareaBlur"
+        @keydown="onTextareaKeydown"
+        @input="onTextareaInput"
+      />
+    </Teleport>
 
   </div>
 </template>
