@@ -5,12 +5,12 @@ import { useElementStore } from '@/store/element'
 import { useViewportStore } from '@/store/viewport'
 import { useToolStore } from '@/store/tool'
 import {
-  type CanvasElement, ElementKind, newElementId,
+  type CanvasElement, type VectorPoint, ElementKind, newElementId, normalizeVectorPath,
   ELEMENT_DEFAULT_FONT_SIZE, ELEMENT_DEFAULT_FONT_FAMILY,
 } from '@/types/element'
 import { ToolType } from '@/types/tool'
 import { isTypingTarget, getDeepActiveElement } from '@/constants/canvas'
-import type { GestureState, ContextMenuState } from '@/types/canvas'
+import type { GestureState, ContextMenuState, PenDraftPoint } from '@/types/canvas'
 import {
   ZOOM_STEP,
   MIN_STROKE_SCREEN_PX, SELECTION_STROKE_SCREEN_PX,
@@ -22,7 +22,7 @@ import {
 } from '@/constants/canvas'
 import {
   type Point, type BaseShapeAttrs,
-  RENDERER_BY_KIND, RENDERER_BY_TOOL, paintColor,
+  RENDERER_BY_KIND, RENDERER_BY_TOOL, paintColor, traceVectorPath,
 } from './strategies/ShapeRendererStrategy'
 import { cullingService } from './services/ViewportCullingService'
 import { measurementService } from './services/MeasurementService'
@@ -39,6 +39,10 @@ const commentStore  = useCommentStore()
 // ── Container ref ──────────────────────────────────────────────────────────────
 
 const containerRef = ref<HTMLDivElement | null>(null)
+/**
+ * Konva Stage 容器相對瀏覽器視窗的位置與尺寸快照。
+ * 由 ResizeObserver 維護，傳遞給 CommentOverlay 用於將覆疊層精確對齊 Stage。
+ */
 const commentOverlayRect = ref({ left: 0, top: 0, width: 0, height: 0 })
 
 // ── Konva objects ──────────────────────────────────────────────────────────────
@@ -47,6 +51,7 @@ let stage:     Konva.Stage
 let gridLayer: Konva.Layer
 let mainLayer: Konva.Layer
 let uiLayer:   Konva.Layer
+let vectorOverlayGroup: Konva.Group
 
 // ── Shape pool（O(k) diff） ───────────────────────────────────────────────────
 
@@ -66,6 +71,10 @@ let _suppressNextStageClick = false
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
 let _gridVisible = initGridVisible(viewportStore.viewport.scale)
+
+const PEN_CLOSE_DISTANCE_SCREEN_PX = 10
+const PEN_HANDLE_MIN_DRAG_WORLD = 2
+const PEN_CONTROL_RADIUS_SCREEN_PX = 4
 
 // ── Measurement overlay 狀態 ──────────────────────────────────────────────────
 
@@ -233,6 +242,239 @@ function pointerWorld(): Point {
   return { x: (ptr.x - vp.x) / vp.scale, y: (ptr.y - vp.y) / vp.scale }
 }
 
+function screenToWorld(px: number): number {
+  return px / viewportStore.viewport.scale
+}
+
+function cloneDraftPoint(point: PenDraftPoint): PenDraftPoint {
+  return {
+    x: point.x,
+    y: point.y,
+    handleIn: point.handleIn ? { ...point.handleIn } : undefined,
+    handleOut: point.handleOut ? { ...point.handleOut } : undefined,
+  }
+}
+
+function isPointNear(a: Point, b: Point, maxDistance: number): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= maxDistance
+}
+
+function defaultElementName(kind: ElementKind): string {
+  const prefix = kind === ElementKind.Vector ? 'Vector' : kind.charAt(0).toUpperCase() + kind.slice(1)
+  const count = Object.values(elementStore.byId).filter((el) => el.kind === kind).length + 1
+  return `${prefix} ${count}`
+}
+
+function vectorWorldPoints(el: CanvasElement): VectorPoint[] {
+  return (el.vectorPoints ?? []).map((point) => ({
+    x: el.x + point.x,
+    y: el.y + point.y,
+    handleIn: point.handleIn ? { x: el.x + point.handleIn.x, y: el.y + point.handleIn.y } : undefined,
+    handleOut: point.handleOut ? { x: el.x + point.handleOut.x, y: el.y + point.handleOut.y } : undefined,
+  }))
+}
+
+function buildPenPreviewShape(scale: number): Konva.Shape {
+  return new Konva.Shape({
+    x: 0,
+    y: 0,
+    fill: '',
+    stroke: COLOR_SELECTION,
+    strokeWidth: 1 / scale,
+    listening: false,
+    vectorPoints: [],
+    previewEnd: null,
+    closed: false,
+    // 建立中的 Pen 不進 store；先用 uiLayer 預覽，完成後再一次性 commit 成真正元素。
+    sceneFunc: (ctx: Konva.Context, shape: Konva.Shape) => {
+      traceVectorPath(
+        ctx,
+        (shape.getAttr('vectorPoints') as VectorPoint[]) ?? [],
+        Boolean(shape.getAttr('closed')),
+        (shape.getAttr('previewEnd') as Point | null) ?? null,
+      )
+      ctx.fillStrokeShape(shape)
+    },
+  })
+}
+
+function renderPenControls(group: Konva.Group, points: PenDraftPoint[], scale: number): void {
+  group.destroyChildren()
+
+  const anchorRadius = PEN_CONTROL_RADIUS_SCREEN_PX / scale
+  const handleRadius = (PEN_CONTROL_RADIUS_SCREEN_PX - 1) / scale
+  const guideWidth = 1 / scale
+
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index]
+
+    if (point.handleIn) {
+      group.add(new Konva.Line({
+        points: [point.x, point.y, point.handleIn.x, point.handleIn.y],
+        stroke: COLOR_SELECTION,
+        strokeWidth: guideWidth,
+        listening: false,
+      }))
+      group.add(new Konva.Circle({
+        x: point.handleIn.x,
+        y: point.handleIn.y,
+        radius: handleRadius,
+        fill: '#ffffff',
+        stroke: COLOR_SELECTION,
+        strokeWidth: guideWidth,
+        listening: false,
+      }))
+    }
+
+    if (point.handleOut) {
+      group.add(new Konva.Line({
+        points: [point.x, point.y, point.handleOut.x, point.handleOut.y],
+        stroke: COLOR_SELECTION,
+        strokeWidth: guideWidth,
+        listening: false,
+      }))
+      group.add(new Konva.Circle({
+        x: point.handleOut.x,
+        y: point.handleOut.y,
+        radius: handleRadius,
+        fill: '#ffffff',
+        stroke: COLOR_SELECTION,
+        strokeWidth: guideWidth,
+        listening: false,
+      }))
+    }
+
+    group.add(new Konva.Circle({
+      x: point.x,
+      y: point.y,
+      radius: anchorRadius,
+      fill: index === 0 ? '#ffffff' : COLOR_SELECTION,
+      stroke: COLOR_SELECTION,
+      strokeWidth: guideWidth,
+      listening: false,
+    }))
+  }
+}
+
+function renderSelectedVectorControls(): void {
+  vectorOverlayGroup.destroyChildren()
+
+  if (_gesture.kind === 'pen') return
+
+  // 只有單選 Vector 時顯示控制點，避免多選或建立中手勢互相打架。
+  const selected = elementStore.selectedElements
+  if (selected.length !== 1 || selected[0].kind !== ElementKind.Vector) {
+    uiLayer.batchDraw()
+    return
+  }
+
+  renderPenControls(vectorOverlayGroup, vectorWorldPoints(selected[0]), viewportStore.viewport.scale)
+  uiLayer.batchDraw()
+}
+
+function refreshPenGesture(g: Extract<GestureState, { kind: 'pen' }>): void {
+  // Pen 的 path 與控制點都掛在 uiLayer，這裡集中同步，避免互動過程散落多處更新。
+  g.path.setAttrs({
+    vectorPoints: g.points.map(cloneDraftPoint),
+    previewEnd: g.pointerDown ? null : g.hoverPoint,
+    closed: g.closing,
+    fill: g.closing ? 'rgba(99,102,241,0.08)' : '',
+    strokeWidth: 1 / viewportStore.viewport.scale,
+  })
+  renderPenControls(g.controls, g.points, viewportStore.viewport.scale)
+  uiLayer.batchDraw()
+}
+
+function destroyPenGesture(g: Extract<GestureState, { kind: 'pen' }>): void {
+  g.path.destroy()
+  g.controls.destroy()
+  uiLayer.batchDraw()
+}
+
+function finishPenGesture(closePath: boolean): void {
+  const g = _gesture
+  if (g.kind !== 'pen') return
+
+  const points = g.points.map(cloneDraftPoint)
+  destroyPenGesture(g)
+  _gesture = { kind: 'idle' }
+
+  // 至少要兩個錨點才有意義；不足時視為取消，不建立空 Vector。
+  if (points.length < 2) return
+
+  const normalized = normalizeVectorPath(points)
+  const el: CanvasElement = {
+    id: newElementId(),
+    name: defaultElementName(ElementKind.Vector),
+    kind: ElementKind.Vector,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    childIds: [],
+    parentId: undefined,
+    fill: closePath ? { type: 'solid', color: '#ffffff' } : { type: 'solid', color: 'transparent' },
+    stroke: { type: 'solid', color: '#6366f1' },
+    strokeWidth: 1,
+    closed: closePath,
+    ...normalized,
+  }
+
+  elementStore.add(el)
+  elementStore.clearSelection()
+  elementStore.select(el.id)
+}
+
+function cancelPenGesture(): void {
+  const g = _gesture
+  if (g.kind !== 'pen') return
+  destroyPenGesture(g)
+  _gesture = { kind: 'idle' }
+}
+
+function startPenGesture(world: Point): void {
+  const path = buildPenPreviewShape(viewportStore.viewport.scale)
+  const controls = new Konva.Group({ listening: false })
+  uiLayer.add(path)
+  uiLayer.add(controls)
+
+  // 第一個點在 mousedown 就先建立，之後 mousemove 才能即時拉出第一段把手。
+  _gesture = {
+    kind: 'pen',
+    points: [{ x: world.x, y: world.y }],
+    path,
+    controls,
+    pointerDown: true,
+    activeIndex: 0,
+    dragOrigin: world,
+    hoverPoint: world,
+    closing: false,
+  }
+  refreshPenGesture(_gesture)
+}
+
+function extendPenGesture(world: Point): void {
+  const g = _gesture
+  if (g.kind !== 'pen') return
+
+  const closeDistance = screenToWorld(PEN_CLOSE_DISTANCE_SCREEN_PX)
+  // 點回第一個錨點時直接閉合，模擬 Figma Pen 的 close path 操作。
+  if (g.points.length >= 2 && isPointNear(world, g.points[0], closeDistance)) {
+    finishPenGesture(true)
+    return
+  }
+
+  g.points = [...g.points, { x: world.x, y: world.y }]
+  g.activeIndex = g.points.length - 1
+  g.pointerDown = true
+  g.dragOrigin = world
+  g.hoverPoint = world
+  g.closing = false
+  refreshPenGesture(g)
+}
+
 /** 組裝 Konva 所需的 shape 屬性（含 Paint→string 轉換）。 */
 function buildShapeAttrs(
   el:          CanvasElement,
@@ -370,8 +612,10 @@ function initStage(): void {
   gridLayer = new Konva.Layer({ listening: false })
   mainLayer = new Konva.Layer()
   uiLayer   = new Konva.Layer({ listening: false })
+  vectorOverlayGroup = new Konva.Group({ listening: false })
   stage.add(gridLayer, mainLayer, uiLayer)
   measurementService.init(uiLayer)
+  uiLayer.add(vectorOverlayGroup)
 
   registerStageEvents()
 
@@ -442,6 +686,13 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
   if (tool === ToolType.Move || tool === ToolType.RegionSelect) { startMarquee(world); return }
   // Comment 工具 → 放置釘針
   if (tool === ToolType.Comment) { placeComment(world); return }
+  if (tool === ToolType.Pen) {
+    _suppressNextStageClick = true
+    // Pen 是多步驟手勢：第一次進入建立模式，後續點擊則追加節點。
+    if (_gesture.kind === 'pen') extendPenGesture(world)
+    else startPenGesture(world)
+    return
+  }
   // 其餘工具 → 繪製
   startDrawing(tool, world)
 }
@@ -536,6 +787,30 @@ function onMouseMove(): void {
     return
   }
 
+  if (g.kind === 'pen') {
+    const world = pointerWorld()
+    g.hoverPoint = world
+    if (g.pointerDown) {
+      const point = g.points[g.activeIndex]
+      const dx = world.x - g.dragOrigin.x
+      const dy = world.y - g.dragOrigin.y
+      if (Math.hypot(dx, dy) >= PEN_HANDLE_MIN_DRAG_WORLD) {
+        if (g.activeIndex === 0 && g.points.length === 1) {
+          // 第一個點只有出把手，沒有入把手；避免建立出不存在的前一段曲線。
+          point.handleOut = { x: point.x + dx, y: point.y + dy }
+        } else {
+          // 後續節點預設建立對稱把手，先提供接近 Figma 的平滑節點體驗。
+          point.handleIn = { x: point.x - dx, y: point.y - dy }
+          point.handleOut = { x: point.x + dx, y: point.y + dy }
+        }
+      }
+    } else if (g.points.length >= 2) {
+      g.closing = isPointNear(world, g.points[0], screenToWorld(PEN_CLOSE_DISTANCE_SCREEN_PX))
+    }
+    refreshPenGesture(g)
+    return
+  }
+
   // 閒置狀態 + Alt 按下：顯示游標所指元素與選取框之間的距離
   if (_altHeld && elementStore.selectedIds.size > 0) {
     const ptr = stage.getPointerPosition()
@@ -585,6 +860,17 @@ function onMouseUp(): void {
     if (newEl?.kind === ElementKind.Text) {
       nextTick(() => startTextEdit(newEl.id))
     }
+    return
+  }
+
+  if (g.kind === 'pen') {
+    g.pointerDown = false
+    g.hoverPoint = pointerWorld()
+    const point = g.points[g.activeIndex]
+    // 如果拖曳距離太短，移除殘留把手，避免單擊節點被誤判成曲線點。
+    if (point.handleIn && !point.handleOut) point.handleIn = undefined
+    if (point.handleOut && !point.handleIn && g.activeIndex !== 0) point.handleOut = undefined
+    refreshPenGesture(g)
   }
 }
 
@@ -617,7 +903,7 @@ function commitDraw(g: Extract<GestureState, { kind: 'drawing' }>): CanvasElemen
   if (!renderer) return null
   const data = renderer.createElement(tool, g.start, pointerWorld())
   if (!data) return null
-  return { id: newElementId(), name: `${data.kind} ${Date.now()}`, ...data }
+  return { id: newElementId(), name: defaultElementName(data.kind), ...data }
 }
 
 // ── Canvas Actions ─────────────────────────────────────────────────────────────
@@ -763,6 +1049,34 @@ const _keyCommands = new Map<string, (e: KeyboardEvent) => void>([
 ])
 
 function onKeydown(e: KeyboardEvent): void {
+  if (_gesture.kind === 'pen') {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelPenGesture()
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      finishPenGesture(false)
+      return
+    }
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      e.preventDefault()
+      if (_gesture.points.length <= 1) {
+        cancelPenGesture()
+      } else {
+        // 回退僅影響暫存手勢，不碰 store，直到真正 finish 才落地成元素。
+        _gesture.points = _gesture.points.slice(0, -1)
+        _gesture.activeIndex = _gesture.points.length - 1
+        _gesture.pointerDown = false
+        _gesture.hoverPoint = pointerWorld()
+        _gesture.closing = false
+        refreshPenGesture(_gesture)
+      }
+      return
+    }
+  }
+
   if (e.key === 'Alt') { e.preventDefault(); _altHeld = true; return }
   if (isTypingTarget(getDeepActiveElement())) return
   _keyCommands.get(keyCombo(e))?.(e)
@@ -807,6 +1121,7 @@ onMounted(() => {
       measurementService.showIdle(absSelected, vp.scale)
     }
 
+    renderSelectedVectorControls()
     stage.batchDraw()
   })
 
@@ -814,6 +1129,13 @@ onMounted(() => {
   watch(() => toolStore.cursor, (cursor) => {
     if (stage && _gesture.kind !== 'panning') {
       stage.container().style.cursor = cursor
+    }
+  })
+
+  watch(() => toolStore.activeTool, (tool, prevTool) => {
+    if (prevTool === ToolType.Pen && tool !== ToolType.Pen && _gesture.kind === 'pen') {
+      // 使用者切走工具時自動收尾，避免畫面留下一個無法操作的 Pen 草稿。
+      finishPenGesture(false)
     }
   })
 

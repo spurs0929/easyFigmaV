@@ -92,6 +92,7 @@ function kindIcon(kind: ElementKind): string {
     case ElementKind.Ellipse:   return '○'
     case ElementKind.Line:      return '╱'
     case ElementKind.Polygon:   return '⬡'
+    case ElementKind.Vector:    return '∿'
     case ElementKind.Text:      return 'T'
     case ElementKind.Frame:     return '⊡'
     case ElementKind.Group:     return '⊞'

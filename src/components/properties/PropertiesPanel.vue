@@ -41,6 +41,7 @@ function kindLabel(kind: ElementKind): string {
     case ElementKind.Ellipse:   return 'Ellipse'
     case ElementKind.Line:      return 'Line'
     case ElementKind.Polygon:   return 'Polygon'
+    case ElementKind.Vector:    return 'Vector'
     case ElementKind.Text:      return 'Text'
     case ElementKind.Frame:     return 'Frame'
     case ElementKind.Group:     return 'Group'
