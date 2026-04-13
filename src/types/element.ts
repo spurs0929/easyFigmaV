@@ -22,6 +22,19 @@ export type Paint = SolidPaint // | GradientPaint | ImagePaint（未來擴充）
 
 export type FontWeight = 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900
 
+export interface VectorHandle {
+  x: number
+  y: number
+}
+
+export interface VectorPoint {
+  x: number
+  y: number
+  // 以錨點自身為基準儲存入/出控制把手，讓 Vector 可表達 Bezier 曲線。
+  handleIn?: VectorHandle
+  handleOut?: VectorHandle
+}
+
 // ── 元素種類 ──────────────────────────────────────────────────────────────────
 
 export enum ElementKind {
@@ -29,6 +42,7 @@ export enum ElementKind {
   Ellipse   = 'ellipse',
   Line      = 'line',
   Polygon   = 'polygon',
+  Vector    = 'vector',
   Text      = 'text',
   Frame     = 'frame',
   Group     = 'group',
@@ -102,6 +116,10 @@ export interface CanvasElement {
    * 空陣列 [] 視為無效，建立時應拒絕或給預設值。
    */
   points?: number[]
+  // Pen 專用的向量節點資料；與 Line/Polygon 的 points 分開，避免互相污染語意。
+  vectorPoints?: VectorPoint[]
+  // true 代表路徑首尾相接，可套用 fill。
+  closed?: boolean
 
   // ── Kind-specific: Rect ───────────────────────────────────────────────────
   /**
@@ -226,6 +244,48 @@ export function computeGroupBounds(
  *   4. rootIds 中的 id 不應同時出現為任何元素的 childId
  *   5. 無循環 parentId 參照
  */
+function vectorPointBounds(points: VectorPoint[]): { x: number; y: number; width: number; height: number } {
+  if (points.length === 0) return { x: 0, y: 0, width: 0, height: 0 }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+
+  const visit = (pt: VectorHandle | VectorPoint | undefined): void => {
+    if (!pt) return
+    if (pt.x < minX) minX = pt.x
+    if (pt.y < minY) minY = pt.y
+    if (pt.x > maxX) maxX = pt.x
+    if (pt.y > maxY) maxY = pt.y
+  }
+
+  for (const point of points) {
+    visit(point)
+    visit(point.handleIn)
+    visit(point.handleOut)
+  }
+
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+}
+
+export function normalizeVectorPath(points: VectorPoint[]): {
+  x: number
+  y: number
+  width: number
+  height: number
+  vectorPoints: VectorPoint[]
+} {
+  // 將世界座標的節點正規化成元素區域座標，讓 x/y/width/height 能維持既有元素系統的一致性。
+  const bounds = vectorPointBounds(points)
+  return {
+    ...bounds,
+    vectorPoints: points.map((point) => ({
+      x: point.x - bounds.x,
+      y: point.y - bounds.y,
+      handleIn: point.handleIn ? { x: point.handleIn.x - bounds.x, y: point.handleIn.y - bounds.y } : undefined,
+      handleOut: point.handleOut ? { x: point.handleOut.x - bounds.x, y: point.handleOut.y - bounds.y } : undefined,
+    })),
+  }
+}
+
 export function assertStoreIntegrity(store: ElementStore): void {
   if (import.meta.env.PROD) return
 
