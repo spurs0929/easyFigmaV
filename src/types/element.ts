@@ -4,8 +4,8 @@
 // 不需修改 CanvasElement 介面。
 
 export interface SolidPaint {
-  type:     'solid'
-  color:    string   // CSS hex / rgb，例 '#ffffff'
+  type: 'solid'
+  color: string // CSS hex / rgb，例 '#ffffff'
   /**
    * 填色本身的不透明度（0–1）。
    * 最終渲染不透明度 = CanvasElement.opacity × SolidPaint.opacity。
@@ -21,6 +21,7 @@ export type Paint = SolidPaint // | GradientPaint | ImagePaint（未來擴充）
 // 導致渲染 fallback 到瀏覽器預設值而難以除錯。
 
 export type FontWeight = 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900
+export type TextAlign = 'left' | 'center' | 'right'
 
 export interface VectorHandle {
   x: number
@@ -38,16 +39,16 @@ export interface VectorPoint {
 // ── 元素種類 ──────────────────────────────────────────────────────────────────
 
 export enum ElementKind {
-  Rect      = 'rect',
-  Ellipse   = 'ellipse',
-  Line      = 'line',
-  Polygon   = 'polygon',
-  Vector    = 'vector',
-  Text      = 'text',
-  Frame     = 'frame',
-  Group     = 'group',
+  Rect = 'rect',
+  Ellipse = 'ellipse',
+  Line = 'line',
+  Polygon = 'polygon',
+  Vector = 'vector',
+  Text = 'text',
+  Frame = 'frame',
+  Group = 'group',
   Component = 'component',
-  Slice     = 'slice',
+  Slice = 'slice',
 }
 
 // ── 畫布元素 ──────────────────────────────────────────────────────────────────
@@ -58,28 +59,28 @@ export enum ElementKind {
 // 以消除 "optional 地獄"。現階段為保持渲染管線的統一性，暫維持扁平結構。
 
 export interface CanvasElement {
-  id:   string
+  id: string
   kind: ElementKind
   name: string
 
   // ── Transform ─────────────────────────────────────────────────────────────
-  x:        number
-  y:        number
+  x: number
+  y: number
   /**
    * Group：由子元素 AABB 推導而來（見 computeGroupBounds）。
    * 渲染時請透過 computeGroupBounds 取得最新值，勿在業務邏輯中直接寫入。
    * 工廠 / group() action 建立時負責初始化此值。
    */
-  width:    number
+  width: number
   /** 同 width 說明。 */
-  height:   number
-  rotation: number  // degrees，順時針
-  scaleX:   number  // 預設 1；-1 = 水平翻轉（Flip H）
-  scaleY:   number  // 預設 1；-1 = 垂直翻轉（Flip V）
+  height: number
+  rotation: number // degrees，順時針
+  scaleX: number // 預設 1；-1 = 水平翻轉（Flip H）
+  scaleY: number // 預設 1；-1 = 垂直翻轉（Flip V）
 
   // ── Appearance ────────────────────────────────────────────────────────────
-  fill:        Paint
-  stroke:      Paint
+  fill: Paint
+  stroke: Paint
   /**
    * 描邊寬度（≥ 0）。入口請用 clampStrokeWidth()，負值在 Canvas/SVG 行為未定義。
    */
@@ -93,19 +94,22 @@ export interface CanvasElement {
 
   // ── State ─────────────────────────────────────────────────────────────────
   visible: boolean
-  locked:  boolean
+  locked: boolean
 
   // ── Tree（Adjacency List — 正規化，不嵌套子元素）──────────────────────────
   // 不變式（由 assertStoreIntegrity 在開發環境驗證）：
   //   el.parentId === undefined  ⟺  rootIds.includes(el.id)
-  parentId?: string   // undefined = root element
-  childIds:  string[] // z-order：index 0 = bottommost（最底層）
+  parentId?: string // undefined = root element
+  childIds: string[] // z-order：index 0 = bottommost（最底層）
 
   // ── Kind-specific: Text ───────────────────────────────────────────────────
-  text?:       string
-  fontSize?:   number
+  text?: string
+  fontSize?: number
   fontFamily?: string
   fontWeight?: FontWeight
+  lineHeight?: number
+  letterSpacing?: number
+  textAlign?: TextAlign
 
   // ── Kind-specific: Line / Polygon ─────────────────────────────────────────
   /**
@@ -144,7 +148,7 @@ export interface CanvasElement {
 // ── 正規化 Store 型別 ─────────────────────────────────────────────────────────
 
 export interface ElementStore {
-  byId:    Readonly<Record<string, CanvasElement>>
+  byId: Readonly<Record<string, CanvasElement>>
   rootIds: string[] // z-order：index 0 = bottommost root element
 }
 
@@ -152,9 +156,9 @@ export interface ElementStore {
 
 export enum ZOrderDirection {
   Front = 'front',
-  Back  = 'back',
-  Up    = 'up',
-  Down  = 'down',
+  Back = 'back',
+  Up = 'up',
+  Down = 'down',
 }
 
 // ── 數學工具 ──────────────────────────────────────────────────────────────────
@@ -176,17 +180,17 @@ export function clampStrokeWidth(v: number): number {
  * 注意：scaleX / scaleY 為 ±1（翻轉），不影響 AABB 大小，故不需額外處理。
  */
 export function rotatedCorners(el: CanvasElement): [number, number][] {
-  const cx  = el.x + el.width  / 2
-  const cy  = el.y + el.height / 2
+  const cx = el.x + el.width / 2
+  const cy = el.y + el.height / 2
   const rad = (el.rotation * Math.PI) / 180
   const cos = Math.cos(rad)
   const sin = Math.sin(rad)
 
   const corners: [number, number][] = [
-    [el.x,             el.y            ],
-    [el.x + el.width,  el.y            ],
-    [el.x + el.width,  el.y + el.height],
-    [el.x,             el.y + el.height],
+    [el.x, el.y],
+    [el.x + el.width, el.y],
+    [el.x + el.width, el.y + el.height],
+    [el.x, el.y + el.height],
   ]
 
   return corners.map(([px, py]) => [
@@ -210,14 +214,17 @@ export function computeGroupBounds(
   store: ElementStore,
 ): { x: number; y: number; width: number; height: number } {
   const children = group.childIds
-    .map(id => store.byId[id])
+    .map((id) => store.byId[id])
     .filter((el): el is CanvasElement => !!el)
 
   if (children.length === 0) {
     return { x: group.x, y: group.y, width: 0, height: 0 }
   }
 
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity
 
   for (const child of children) {
     for (const [px, py] of rotatedCorners(child)) {
@@ -244,10 +251,18 @@ export function computeGroupBounds(
  *   4. rootIds 中的 id 不應同時出現為任何元素的 childId
  *   5. 無循環 parentId 參照
  */
-function vectorPointBounds(points: VectorPoint[]): { x: number; y: number; width: number; height: number } {
+function vectorPointBounds(points: VectorPoint[]): {
+  x: number
+  y: number
+  width: number
+  height: number
+} {
   if (points.length === 0) return { x: 0, y: 0, width: 0, height: 0 }
 
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity
 
   const visit = (pt: VectorHandle | VectorPoint | undefined): void => {
     if (!pt) return
@@ -280,8 +295,12 @@ export function normalizeVectorPath(points: VectorPoint[]): {
     vectorPoints: points.map((point) => ({
       x: point.x - bounds.x,
       y: point.y - bounds.y,
-      handleIn: point.handleIn ? { x: point.handleIn.x - bounds.x, y: point.handleIn.y - bounds.y } : undefined,
-      handleOut: point.handleOut ? { x: point.handleOut.x - bounds.x, y: point.handleOut.y - bounds.y } : undefined,
+      handleIn: point.handleIn
+        ? { x: point.handleIn.x - bounds.x, y: point.handleIn.y - bounds.y }
+        : undefined,
+      handleOut: point.handleOut
+        ? { x: point.handleOut.x - bounds.x, y: point.handleOut.y - bounds.y }
+        : undefined,
     })),
   }
 }
@@ -322,7 +341,7 @@ export function assertStoreIntegrity(store: ElementStore): void {
   }
 
   // 4. rootIds 不應同時是子元素
-  const allChildIds = new Set(Object.values(byId).flatMap(el => el.childIds))
+  const allChildIds = new Set(Object.values(byId).flatMap((el) => el.childIds))
   for (const id of rootIds) {
     if (allChildIds.has(id)) {
       console.error(`${tag} rootId "${id}" 同時出現在某個元素的 childIds 中`)
@@ -353,11 +372,14 @@ export function newElementId(): string {
 
 // ── 預設值 ────────────────────────────────────────────────────────────────────
 
-export const GROUP_DEFAULT_NAME:          string     = 'Group'
-export const ELEMENT_DEFAULT_FILL:        Paint      = { type: 'solid', color: '#ffffff' }
-export const ELEMENT_DEFAULT_STROKE:      Paint      = { type: 'solid', color: '#6366f1' }
-export const ELEMENT_DEFAULT_FONT_FAMILY: string     = 'Inter'
-export const ELEMENT_DEFAULT_FONT_SIZE:   number     = 14
+export const GROUP_DEFAULT_NAME: string = 'Group'
+export const ELEMENT_DEFAULT_FILL: Paint = { type: 'solid', color: '#ffffff' }
+export const ELEMENT_DEFAULT_STROKE: Paint = { type: 'solid', color: '#6366f1' }
+export const ELEMENT_DEFAULT_FONT_FAMILY: string = 'Inter'
+export const ELEMENT_DEFAULT_FONT_SIZE: number = 14
 export const ELEMENT_DEFAULT_FONT_WEIGHT: FontWeight = 400
-export const POLYGON_DEFAULT_SIDES:       number     = 5
-export const ELEMENT_HISTORY_MAX:         number     = 50
+export const ELEMENT_DEFAULT_LINE_HEIGHT: number = 1.5
+export const ELEMENT_DEFAULT_LETTER_SPACING: number = 0
+export const ELEMENT_DEFAULT_TEXT_ALIGN: TextAlign = 'left'
+export const POLYGON_DEFAULT_SIDES: number = 5
+export const ELEMENT_HISTORY_MAX: number = 50

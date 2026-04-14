@@ -6,6 +6,10 @@ import {
   ELEMENT_DEFAULT_STROKE,
   ELEMENT_DEFAULT_FONT_FAMILY,
   ELEMENT_DEFAULT_FONT_SIZE,
+  ELEMENT_DEFAULT_FONT_WEIGHT,
+  ELEMENT_DEFAULT_LINE_HEIGHT,
+  ELEMENT_DEFAULT_LETTER_SPACING,
+  ELEMENT_DEFAULT_TEXT_ALIGN,
   POLYGON_DEFAULT_SIDES,
 } from '@/types/element'
 import { ToolType } from '@/types/tool'
@@ -375,9 +379,13 @@ class TextRenderer implements DrawableRenderer {
       x: el.x,
       y: el.y,
       width: el.width,
-      text: el.text ?? 'Text',
+      text: el.text ?? '',
       fontSize: el.fontSize ?? ELEMENT_DEFAULT_FONT_SIZE,
       fontFamily: el.fontFamily ?? ELEMENT_DEFAULT_FONT_FAMILY,
+      fontStyle: (el.fontWeight ?? ELEMENT_DEFAULT_FONT_WEIGHT) >= 600 ? 'bold' : 'normal',
+      lineHeight: el.lineHeight ?? ELEMENT_DEFAULT_LINE_HEIGHT,
+      letterSpacing: el.letterSpacing ?? ELEMENT_DEFAULT_LETTER_SPACING,
+      align: el.textAlign ?? ELEMENT_DEFAULT_TEXT_ALIGN,
     }
   }
 
@@ -397,11 +405,15 @@ class TextRenderer implements DrawableRenderer {
         y: start.y,
         width: 200,
         height: ELEMENT_DEFAULT_FONT_SIZE * 1.5,
-        text: 'Text',
+        text: '',
         // Text 的 fill 是實際字色，不能像一般圖形預設透明，否則一旦失去選取就會看起來消失。
         fill: ELEMENT_DEFAULT_FILL,
         stroke: ELEMENT_DEFAULT_STROKE,
         strokeWidth: 0,
+        fontWeight: ELEMENT_DEFAULT_FONT_WEIGHT,
+        lineHeight: ELEMENT_DEFAULT_LINE_HEIGHT,
+        letterSpacing: ELEMENT_DEFAULT_LETTER_SPACING,
+        textAlign: ELEMENT_DEFAULT_TEXT_ALIGN,
       }
     }
     return {
@@ -411,10 +423,14 @@ class TextRenderer implements DrawableRenderer {
       y,
       width,
       height,
-      text: 'Text',
+      text: '',
       fill: ELEMENT_DEFAULT_FILL,
       stroke: ELEMENT_DEFAULT_STROKE,
       strokeWidth: 0,
+      fontWeight: ELEMENT_DEFAULT_FONT_WEIGHT,
+      lineHeight: ELEMENT_DEFAULT_LINE_HEIGHT,
+      letterSpacing: ELEMENT_DEFAULT_LETTER_SPACING,
+      textAlign: ELEMENT_DEFAULT_TEXT_ALIGN,
     }
   }
 }
