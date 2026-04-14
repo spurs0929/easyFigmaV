@@ -1,16 +1,15 @@
-$color-bg:       #1e1e1e;
-$color-border:   #2a2a2a;
-$color-text:     #ccc;
+$color-bg: #1e1e1e;
+$color-border: #2a2a2a;
+$color-text: #ccc;
 $color-text-dim: #999;
 $color-text-muted: #555;
 $color-input-bg: #2a2a2a;
 $color-input-border: #333;
-$color-accent:   #6366f1;
+$color-accent: #6366f1;
+$color-accent-soft: rgba(99, 102, 241, 0.18);
 $font-size-base: 12px;
-$font-size-sm:   11px;
-$font-size-xs:   10px;
-
-// ── 容器 ─────────────────────────────────────────────────────────────────────
+$font-size-sm: 11px;
+$font-size-xs: 10px;
 
 .props-panel {
   width: 240px;
@@ -19,41 +18,48 @@ $font-size-xs:   10px;
   border-left: 1px solid $color-border;
   overflow-x: hidden;
   overflow-y: auto;
-  font-size: $font-size-base;
   color: $color-text;
+  font-size: $font-size-base;
   scrollbar-width: thin;
   scrollbar-color: #333 transparent;
 }
 
-// ── Kind 標頭 ─────────────────────────────────────────────────────────────────
-
 .props-kind {
   padding: 10px 12px 8px;
-  font-weight: 600;
   font-size: $font-size-sm;
+  font-weight: 600;
   color: $color-text-dim;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   border-bottom: 1px solid $color-border;
 }
 
-// ── Section ───────────────────────────────────────────────────────────────────
-
 .props-section {
   padding: 10px 12px;
   border-bottom: 1px solid $color-border;
-
-  &-title {
-    font-size: $font-size-sm;
-    font-weight: 600;
-    color: #888;
-    margin-bottom: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
 }
 
-// ── 2 欄網格 ──────────────────────────────────────────────────────────────────
+.props-section-title {
+  margin-bottom: 6px;
+  color: #888;
+  font-size: $font-size-sm;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.props-subtitle {
+  margin-bottom: 6px;
+  color: #777;
+  font-size: $font-size-xs;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.props-stack {
+  display: grid;
+  gap: 8px;
+}
 
 .props-grid-2 {
   display: grid;
@@ -61,60 +67,68 @@ $font-size-xs:   10px;
   gap: 6px;
 }
 
-// ── 輸入欄位 ──────────────────────────────────────────────────────────────────
+.props-grid-2--spaced {
+  margin-top: 6px;
+}
+
+.props-field,
+.props-select,
+.props-hex {
+  min-width: 0;
+  border: 1px solid $color-input-border;
+  border-radius: 4px;
+  background: $color-input-bg;
+}
 
 .props-field {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: $color-input-bg;
-  border: 1px solid $color-input-border;
-  border-radius: 4px;
   padding: 3px 6px;
-
-  &--wide {
-    grid-column: span 2;
-  }
 
   &:focus-within {
     border-color: $color-accent;
   }
 
   input {
-    flex: 1;
-    background: none;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
     border: none;
     outline: none;
+    background: transparent;
     color: #e0e0e0;
-    font-size: $font-size-base;
-    width: 0;      // 允許 flex 自行分配寬度
-    min-width: 0;
-    font-family: inherit;
+    font: inherit;
 
-    // 隱藏 number input 的上下箭頭
     &::-webkit-outer-spin-button,
     &::-webkit-inner-spin-button {
       -webkit-appearance: none;
+      margin: 0;
     }
+
     -moz-appearance: textfield;
   }
 }
 
-// ── 標籤 / 單位文字 ───────────────────────────────────────────────────────────
+.props-select,
+.props-hex {
+  width: 100%;
+  padding: 3px 6px;
+  outline: none;
+  color: #e0e0e0;
+  font: inherit;
 
-.props-label {
-  font-size: $font-size-xs;
-  color: #666;
-  flex-shrink: 0;
+  &:focus {
+    border-color: $color-accent;
+  }
 }
 
+.props-label,
 .props-unit {
-  font-size: $font-size-xs;
-  color: #666;
   flex-shrink: 0;
+  color: #666;
+  font-size: $font-size-xs;
 }
-
-// ── 顏色列 ────────────────────────────────────────────────────────────────────
 
 .props-color-row {
   display: flex;
@@ -128,45 +142,49 @@ $font-size-xs:   10px;
   padding: 0;
   border: 1px solid #444;
   border-radius: 4px;
-  cursor: pointer;
-  flex-shrink: 0;
   background: none;
-  // 去除瀏覽器預設樣式讓色塊填滿
-  -webkit-appearance: none;
+  cursor: pointer;
   appearance: none;
+  -webkit-appearance: none;
 
   &::-webkit-color-swatch-wrapper { padding: 0; }
-  &::-webkit-color-swatch         { border: none; border-radius: 3px; }
-  &::-moz-color-swatch            { border: none; border-radius: 3px; }
-}
-
-.props-hex {
-  flex: 1;
-  background: $color-input-bg;
-  border: 1px solid $color-input-border;
-  border-radius: 4px;
-  color: #e0e0e0;
-  font-size: $font-size-base;
-  padding: 3px 6px;
-  outline: none;
-  font-family: 'Courier New', monospace;
-  min-width: 0;
-
-  &:focus {
-    border-color: $color-accent;
-  }
+  &::-webkit-color-swatch { border: none; border-radius: 3px; }
+  &::-moz-color-swatch { border: none; border-radius: 3px; }
 }
 
 .props-stroke-w {
-  flex: 0 1 52px;
-  min-width: 0;
+  width: 52px;
 }
 
-// ── 空狀態 ────────────────────────────────────────────────────────────────────
+.props-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.props-segmented__btn {
+  padding: 4px 6px;
+  border: 1px solid $color-input-border;
+  border-radius: 4px;
+  background: $color-input-bg;
+  color: $color-text-dim;
+  font: inherit;
+  cursor: pointer;
+
+  &:hover {
+    border-color: #444;
+    color: #fff;
+  }
+
+  &.is-active {
+    border-color: $color-accent;
+    background: $color-accent-soft;
+    color: #fff;
+  }
+}
 
 .props-empty {
   padding: 24px 12px;
   color: $color-text-muted;
-  font-size: $font-size-base;
   text-align: center;
 }

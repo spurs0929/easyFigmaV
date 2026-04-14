@@ -1,31 +1,58 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useElementStore } from '@/store/element'
-import { ElementKind, type CanvasElement, type SolidPaint } from '@/types/element'
-
-// ── Store ─────────────────────────────────────────────────────────────────────
+import {
+  ElementKind,
+  type CanvasElement,
+  type FontWeight,
+  type SolidPaint,
+  type TextAlign,
+  ELEMENT_DEFAULT_FONT_FAMILY,
+  ELEMENT_DEFAULT_FONT_SIZE,
+  ELEMENT_DEFAULT_FONT_WEIGHT,
+  ELEMENT_DEFAULT_LETTER_SPACING,
+  ELEMENT_DEFAULT_LINE_HEIGHT,
+  ELEMENT_DEFAULT_TEXT_ALIGN,
+} from '@/types/element'
 
 const elementStore = useElementStore()
 
-// ── Computed ──────────────────────────────────────────────────────────────────
+const FIELD_MIN: Partial<Record<keyof CanvasElement, number>> = {
+  width: 1,
+  height: 1,
+  strokeWidth: 0,
+  cornerRadius: 0,
+  fontSize: 1,
+  lineHeight: 0.5,
+  letterSpacing: 0,
+}
 
-/** 單選元素；0 個或多選時為 null。 */
+const FONT_FAMILY_OPTIONS = ['Inter', 'Arial', 'Noto Sans TC', 'Roboto', 'Helvetica Neue', 'monospace']
+const FONT_WEIGHT_OPTIONS: Array<{ label: string; value: FontWeight }> = [
+  { label: 'Thin', value: 100 },
+  { label: 'Extra Light', value: 200 },
+  { label: 'Light', value: 300 },
+  { label: 'Regular', value: 400 },
+  { label: 'Medium', value: 500 },
+  { label: 'Semi Bold', value: 600 },
+  { label: 'Bold', value: 700 },
+  { label: 'Extra Bold', value: 800 },
+  { label: 'Black', value: 900 },
+]
+const TEXT_ALIGN_OPTIONS: Array<{ label: string; value: TextAlign }> = [
+  { label: 'Left', value: 'left' },
+  { label: 'Center', value: 'center' },
+  { label: 'Right', value: 'right' },
+]
+const DEFAULT_COLOR_HEX = '#000000'
+const EMPTY_SELECTION_MESSAGE = '選取一個物件後即可編輯屬性'
+
 const el = computed<CanvasElement | null>(() => {
   const selected = elementStore.selectedElements
   return selected.length === 1 ? selected[0] : null
 })
 
-// ── 欄位最小值限制（避免無效尺寸傳入渲染引擎） ──────────────────────────────────
-
-const FIELD_MIN: Partial<Record<keyof CanvasElement, number>> = {
-  width:        1,
-  height:       1,
-  strokeWidth:  0,
-  cornerRadius: 0,
-  fontSize:     1,
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
+const _colorAtOpen = ref<Record<'fill' | 'stroke', string>>({ fill: '', stroke: '' })
 
 function round(n: number): number {
   return Math.round(n * 10) / 10
@@ -37,49 +64,37 @@ function toPercent(opacity: number): number {
 
 function kindLabel(kind: ElementKind): string {
   switch (kind) {
-    case ElementKind.Rect:      return 'Rectangle'
-    case ElementKind.Ellipse:   return 'Ellipse'
-    case ElementKind.Line:      return 'Line'
-    case ElementKind.Polygon:   return 'Polygon'
-    case ElementKind.Vector:    return 'Vector'
-    case ElementKind.Text:      return 'Text'
-    case ElementKind.Frame:     return 'Frame'
-    case ElementKind.Group:     return 'Group'
+    case ElementKind.Rect: return 'Rectangle'
+    case ElementKind.Ellipse: return 'Ellipse'
+    case ElementKind.Line: return 'Line'
+    case ElementKind.Polygon: return 'Polygon'
+    case ElementKind.Vector: return 'Vector'
+    case ElementKind.Text: return 'Text'
+    case ElementKind.Frame: return 'Frame'
+    case ElementKind.Group: return 'Group'
     case ElementKind.Component: return 'Component'
-    default:                    return 'Element'
+    default: return 'Element'
   }
 }
 
-/** 從 Paint 安全取出 SolidPaint；若不是 solid 則回傳 null。 */
 function asSolid(paint: CanvasElement['fill'] | undefined): SolidPaint | null {
   return paint?.type === 'solid' ? paint : null
 }
-
-// ── 顏色快照顆粒度：記錄拾色器開啟時的顏色，僅在顏色真正改變時才推 snapshot ──
-
-const _colorAtOpen = ref<Record<'fill' | 'stroke', string>>({ fill: '', stroke: '' })
 
 function onColorPickerOpen(field: 'fill' | 'stroke'): void {
   const solid = asSolid(el.value?.[field])
   _colorAtOpen.value[field] = solid?.color ?? ''
 }
 
-// ── Update Handlers ───────────────────────────────────────────────────────────
-
-/**
- * 通用數值欄位更新。
- * 套用 FIELD_MIN 下限保護，避免傳入 0 或負值給渲染引擎（如 width/height）。
- */
 function onNumericFieldChange(field: keyof CanvasElement, event: Event): void {
   if (!el.value) return
   const raw = parseFloat((event.target as HTMLInputElement).value)
   if (isNaN(raw)) return
   const min = FIELD_MIN[field]
-  const val = min !== undefined ? Math.max(min, raw) : raw
-  elementStore.commitUpdate(el.value.id, { [field]: val } as Partial<CanvasElement>)
+  const value = min !== undefined ? Math.max(min, raw) : raw
+  elementStore.commitUpdate(el.value.id, { [field]: value } as Partial<CanvasElement>)
 }
 
-/** Opacity：UI 以百分比 (0–100) 輸入，clamp 後換算至 0–1 存入 store。 */
 function onOpacityChange(event: Event): void {
   if (!el.value) return
   const pct = parseFloat((event.target as HTMLInputElement).value)
@@ -88,7 +103,6 @@ function onOpacityChange(event: Event): void {
   elementStore.commitUpdate(el.value.id, { opacity: clamped })
 }
 
-/** 拾色器拖曳中：live update，不推 snapshot（效能優化）。 */
 function onColorPreview(field: 'fill' | 'stroke', event: Event): void {
   if (!el.value) return
   const existing = asSolid(el.value[field])
@@ -97,7 +111,6 @@ function onColorPreview(field: 'fill' | 'stroke', event: Event): void {
   elementStore.update(el.value.id, { [field]: { ...existing, color } })
 }
 
-/** 拾色器關閉：僅當顏色真正改變時才推 snapshot，避免冗餘 undo 項目。 */
 function onColorCommit(field: 'fill' | 'stroke'): void {
   if (!el.value) return
   const solid = asSolid(el.value[field])
@@ -106,7 +119,6 @@ function onColorCommit(field: 'fill' | 'stroke'): void {
   }
 }
 
-/** Hex 文字輸入確認（update + snapshot 合一）。 */
 function onHexChange(field: 'fill' | 'stroke', event: Event): void {
   if (!el.value) return
   const existing = asSolid(el.value[field])
@@ -116,24 +128,32 @@ function onHexChange(field: 'fill' | 'stroke', event: Event): void {
   elementStore.commitUpdate(el.value.id, { [field]: { ...existing, color } })
 }
 
-/** fontFamily：過濾空字串，避免文字消失。 */
 function onFontFamilyChange(event: Event): void {
   if (!el.value) return
-  const val = (event.target as HTMLInputElement).value.trim()
-  if (!val) return
-  elementStore.commitUpdate(el.value.id, { fontFamily: val })
+  const value = (event.target as HTMLInputElement).value.trim()
+  if (!value) return
+  elementStore.commitUpdate(el.value.id, { fontFamily: value })
+}
+
+function onFontWeightChange(event: Event): void {
+  if (!el.value) return
+  const value = Number((event.target as HTMLSelectElement).value) as FontWeight
+  elementStore.commitUpdate(el.value.id, { fontWeight: value })
+}
+
+function setTextAlign(align: TextAlign): void {
+  if (!el.value) return
+  elementStore.commitUpdate(el.value.id, { textAlign: align })
 }
 </script>
 
 <template>
   <div class="props-panel">
     <template v-if="el">
-
-      <!-- Kind header -->
       <div class="props-kind">{{ kindLabel(el.kind) }}</div>
 
-      <!-- Position & Size -->
       <section class="props-section">
+        <div class="props-section-title">Position</div>
         <div class="props-grid-2">
           <label class="props-field">
             <span class="props-label">X</span>
@@ -143,16 +163,10 @@ function onFontFamilyChange(event: Event): void {
             <span class="props-label">Y</span>
             <input type="number" :value="round(el.y)" @change="onNumericFieldChange('y', $event)">
           </label>
+        </div>
+        <div class="props-grid-2 props-grid-2--spaced">
           <label class="props-field">
-            <span class="props-label">W</span>
-            <input type="number" min="1" :value="round(el.width)" @change="onNumericFieldChange('width', $event)">
-          </label>
-          <label class="props-field">
-            <span class="props-label">H</span>
-            <input type="number" min="1" :value="round(el.height)" @change="onNumericFieldChange('height', $event)">
-          </label>
-          <label class="props-field">
-            <span class="props-label">°</span>
+            <span class="props-label">Rotation</span>
             <input type="number" :value="round(el.rotation)" @change="onNumericFieldChange('rotation', $event)">
           </label>
           <label class="props-field">
@@ -163,14 +177,27 @@ function onFontFamilyChange(event: Event): void {
         </div>
       </section>
 
-      <!-- Fill (hidden for Line) -->
+      <section class="props-section">
+        <div class="props-section-title">Layout</div>
+        <div class="props-grid-2">
+          <label class="props-field">
+            <span class="props-label">W</span>
+            <input type="number" min="1" :value="round(el.width)" @change="onNumericFieldChange('width', $event)">
+          </label>
+          <label class="props-field">
+            <span class="props-label">H</span>
+            <input type="number" min="1" :value="round(el.height)" @change="onNumericFieldChange('height', $event)">
+          </label>
+        </div>
+      </section>
+
       <section v-if="el.kind !== ElementKind.Line" class="props-section">
         <div class="props-section-title">Fill</div>
         <div class="props-color-row">
           <input
             type="color"
             class="props-color-swatch"
-            :value="asSolid(el.fill)?.color || '#000000'"
+            :value="asSolid(el.fill)?.color || DEFAULT_COLOR_HEX"
             @mousedown="onColorPickerOpen('fill')"
             @input="onColorPreview('fill', $event)"
             @change="onColorCommit('fill')"
@@ -179,20 +206,19 @@ function onFontFamilyChange(event: Event): void {
             type="text"
             class="props-hex"
             :value="asSolid(el.fill)?.color ?? ''"
-            placeholder="#——"
+            :placeholder="DEFAULT_COLOR_HEX"
             @change="onHexChange('fill', $event)"
           >
         </div>
       </section>
 
-      <!-- Stroke -->
       <section class="props-section">
         <div class="props-section-title">Stroke</div>
         <div class="props-color-row">
           <input
             type="color"
             class="props-color-swatch"
-            :value="asSolid(el.stroke)?.color || '#000000'"
+            :value="asSolid(el.stroke)?.color || DEFAULT_COLOR_HEX"
             @mousedown="onColorPickerOpen('stroke')"
             @input="onColorPreview('stroke', $event)"
             @change="onColorCommit('stroke')"
@@ -201,7 +227,7 @@ function onFontFamilyChange(event: Event): void {
             type="text"
             class="props-hex"
             :value="asSolid(el.stroke)?.color ?? ''"
-            placeholder="#——"
+            :placeholder="DEFAULT_COLOR_HEX"
             @change="onHexChange('stroke', $event)"
           >
           <label class="props-field props-stroke-w">
@@ -210,49 +236,64 @@ function onFontFamilyChange(event: Event): void {
         </div>
       </section>
 
-      <!-- Corner Radius (Rect / Frame only) -->
       <section
         v-if="el.kind === ElementKind.Rect || el.kind === ElementKind.Frame"
         class="props-section"
       >
-        <div class="props-section-title">Corner Radius</div>
+        <div class="props-section-title">Appearance</div>
         <label class="props-field">
-          <input
-            type="number"
-            min="0"
-            :value="el.cornerRadius ?? 0"
-            @change="onNumericFieldChange('cornerRadius', $event)"
-          >
+          <span class="props-label">Corner radius</span>
+          <input type="number" min="0" :value="el.cornerRadius ?? 0" @change="onNumericFieldChange('cornerRadius', $event)">
         </label>
       </section>
 
-      <!-- Typography (Text only) -->
       <section v-if="el.kind === ElementKind.Text" class="props-section">
         <div class="props-section-title">Typography</div>
-        <div class="props-grid-2">
-          <label class="props-field">
-            <span class="props-label">Size</span>
-            <input
-              type="number"
-              min="1"
-              :value="el.fontSize ?? 14"
-              @change="onNumericFieldChange('fontSize', $event)"
+        <div class="props-stack">
+          <select class="props-select" :value="el.fontFamily ?? ELEMENT_DEFAULT_FONT_FAMILY" @change="onFontFamilyChange($event)">
+            <option v-for="family in FONT_FAMILY_OPTIONS" :key="family" :value="family">{{ family }}</option>
+          </select>
+
+          <div class="props-grid-2">
+            <select class="props-select" :value="String(el.fontWeight ?? ELEMENT_DEFAULT_FONT_WEIGHT)" @change="onFontWeightChange($event)">
+              <option v-for="weight in FONT_WEIGHT_OPTIONS" :key="weight.value" :value="weight.value">{{ weight.label }}</option>
+            </select>
+            <label class="props-field">
+              <span class="props-label">Size</span>
+              <input type="number" min="1" :value="el.fontSize ?? ELEMENT_DEFAULT_FONT_SIZE" @change="onNumericFieldChange('fontSize', $event)">
+            </label>
+          </div>
+
+          <div class="props-grid-2">
+            <label class="props-field">
+              <span class="props-label">Line height</span>
+              <input type="number" min="0.5" step="0.1" :value="el.lineHeight ?? ELEMENT_DEFAULT_LINE_HEIGHT" @change="onNumericFieldChange('lineHeight', $event)">
+            </label>
+            <label class="props-field">
+              <span class="props-label">Letter spacing</span>
+              <input type="number" min="0" step="0.1" :value="el.letterSpacing ?? ELEMENT_DEFAULT_LETTER_SPACING" @change="onNumericFieldChange('letterSpacing', $event)">
+              <span class="props-unit">px</span>
+            </label>
+          </div>
+
+          <div class="props-subtitle">Alignment</div>
+          <div class="props-segmented">
+            <button
+              v-for="option in TEXT_ALIGN_OPTIONS"
+              :key="option.value"
+              type="button"
+              class="props-segmented__btn"
+              :class="{ 'is-active': (el.textAlign ?? ELEMENT_DEFAULT_TEXT_ALIGN) === option.value }"
+              @click="setTextAlign(option.value)"
             >
-          </label>
-          <label class="props-field props-field--wide">
-            <span class="props-label">Font</span>
-            <input
-              type="text"
-              :value="el.fontFamily ?? 'Inter'"
-              @change="onFontFamilyChange($event)"
-            >
-          </label>
+              {{ option.label }}
+            </button>
+          </div>
         </div>
       </section>
-
     </template>
 
-    <div v-else class="props-empty">選取圖形以查看屬性</div>
+    <div v-else class="props-empty">{{ EMPTY_SELECTION_MESSAGE }}</div>
   </div>
 </template>
 
