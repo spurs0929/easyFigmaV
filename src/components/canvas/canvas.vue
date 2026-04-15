@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
 import Konva from 'konva'
 import { useElementStore } from '@/store/element'
 import { useViewportStore } from '@/store/viewport'
@@ -10,18 +10,13 @@ import {
   ElementKind,
   newElementId,
   normalizeVectorPath,
-  ELEMENT_DEFAULT_FONT_SIZE,
-  ELEMENT_DEFAULT_FONT_FAMILY,
-  ELEMENT_DEFAULT_FILL,
-  ELEMENT_DEFAULT_FONT_WEIGHT,
-  ELEMENT_DEFAULT_LINE_HEIGHT,
-  ELEMENT_DEFAULT_LETTER_SPACING,
-  ELEMENT_DEFAULT_TEXT_ALIGN,
-  ELEMENT_DEFAULT_STROKE,
 } from '@/types/element'
 import { ToolType } from '@/types/tool'
-import { isTypingTarget, getDeepActiveElement } from '@/constants/canvas'
-import type { GestureState, ContextMenuState, PenDraftPoint } from '@/types/canvas'
+import type { GestureState, PenDraftPoint } from '@/types/canvas'
+import { useCanvasActions } from '@/composables/useCanvasActions'
+import { useContextMenu } from '@/composables/useContextMenu'
+import { useTextEdit } from '@/composables/useTextEdit'
+import { useCanvasKeyboard } from '@/composables/useCanvasKeyboard'
 import {
   ZOOM_STEP,
   MIN_STROKE_SCREEN_PX,
@@ -55,6 +50,28 @@ const viewportStore = useViewportStore()
 const toolStore = useToolStore()
 const commentStore = useCommentStore()
 
+// ── Composables ────────────────────────────────────────────────────────────────
+const { deleteSelected, groupSelected, ungroupSelected, duplicateSelected } = useCanvasActions()
+
+const { contextMenu, onContainerContextMenu, closeContextMenu } = useContextMenu(() => stage)
+
+const keyboard = useCanvasKeyboard({
+  getGesture: () => _gesture,
+  cancelPenGesture,
+  finishPenGesture,
+  refreshPenGesture,
+  pointerWorld,
+  deleteSelected,
+  duplicateSelected,
+  groupSelected,
+  ungroupSelected,
+  onAltRelease: () => {
+    const absSelected = elementStore.selectedElements.map(absoluteCoords)
+    measurementService.showIdle(absSelected, viewportStore.viewport.scale)
+    uiLayer.batchDraw()
+  },
+})
+
 // ── Container ref ──────────────────────────────────────────────────────────────
 const containerRef = ref<HTMLDivElement | null>(null)
 /**
@@ -62,6 +79,28 @@ const containerRef = ref<HTMLDivElement | null>(null)
  * 由 ResizeObserver 維護，傳遞給 CommentOverlay 用於將覆疊層精確對齊 Stage。
  */
 const commentOverlayRect = ref({ left: 0, top: 0, width: 0, height: 0 })
+const {
+  editingTextId,
+  textareaRef,
+  editingTextDraft,
+  editingTextStyle,
+  commitTextEdit,
+  cancelTextEdit,
+  startTextEdit,
+  scheduleTextEdit,
+  beginTextEdit,
+  createTextElementAt,
+  onTextareaBlur,
+  onTextareaKeydown,
+  onTextareaInput,
+} = useTextEdit(
+  commentOverlayRect,
+  () => mainLayer?.batchDraw(),
+  () => {
+    _suppressNextStageClick = true
+  },
+  defaultElementName,
+)
 
 // ── Konva objects ──────────────────────────────────────────────────────────────
 
@@ -115,211 +154,6 @@ function placeComment(world: Point): void {
   const comment = commentStore.add(world.x, world.y)
   _autoOpenCommentId.value = comment.id
 }
-
-// ── Text Editing ───────────────────────────────────────────────────────────────
-const editingTextId = ref<string | null>(null)
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
-/**
- * 進入編輯前的原始文字，供 cancelTextEdit 還原用。
- * ⚠️ 假設：編輯期間不會有任何中間寫入 store 的操作（onTextareaInput 只調整高度）。
- * 若未來加入「即時預覽」，cancelTextEdit 須改為主動 update(id, _editOldText)。
- */
-let _editOldText = ''
-const editingTextDraft = ref('')
-let _pendingTextEditTimer: number | null = null
-
-const editingTextStyle = computed(() => {
-  const id = editingTextId.value
-  if (!id) return {}
-  // elementStore.get 存取 _store.value.byId[id]（reactive ref 屬性），
-  // Vue 自動追蹤依賴，rotation / fontSize 等屬性變更都會觸發此 computed 重算。
-  const el = elementStore.get(id)
-  if (!el) return {}
-  const vp = viewportStore.viewport
-  const absEl = absoluteCoords(el)
-  const fontPx = (el.fontSize ?? ELEMENT_DEFAULT_FONT_SIZE) * vp.scale
-  const style: Record<string, string> = {
-    left: `${commentOverlayRect.value.left + absEl.x * vp.scale + vp.x}px`,
-    top: `${commentOverlayRect.value.top + absEl.y * vp.scale + vp.y}px`,
-    minHeight: `${fontPx * TEXT_OVERLAY_MIN_HEIGHT_RATIO}px`,
-    width: `${Math.max(absEl.width * vp.scale, fontPx * TEXT_OVERLAY_MIN_WIDTH_RATIO)}px`,
-    fontSize: `${fontPx}px`,
-    fontFamily: el.fontFamily ?? ELEMENT_DEFAULT_FONT_FAMILY,
-    fontWeight: String(el.fontWeight ?? ELEMENT_DEFAULT_FONT_WEIGHT),
-    lineHeight: String(el.lineHeight ?? ELEMENT_DEFAULT_LINE_HEIGHT),
-    letterSpacing: `${el.letterSpacing ?? ELEMENT_DEFAULT_LETTER_SPACING}px`,
-    textAlign: el.textAlign ?? ELEMENT_DEFAULT_TEXT_ALIGN,
-    position: TEXT_OVERLAY_POSITION,
-    zIndex: String(TEXT_OVERLAY_Z_INDEX),
-  }
-  if (el.rotation) {
-    style.transform = `rotate(${el.rotation}deg)`
-    style.transformOrigin = 'top left'
-  }
-  return style
-})
-
-function _exitTextEdit(id: string): void {
-  if (_pendingTextEditTimer !== null) {
-    window.clearTimeout(_pendingTextEditTimer)
-    _pendingTextEditTimer = null
-  }
-  // editingTextId 先清空，再執行 DOM 副作用。
-  // Vue ref 賦值同步，_exitTextEdit 返回後才 flush DOM 並移除 textarea。
-  // 若移除 textarea 觸發 blur → commitTextEdit，此時 editingTextId 已為 null，
-  // commitTextEdit 開頭守衛 `if (!id) return` 立即截斷，不重複執行。
-  editingTextId.value = null
-  editingTextDraft.value = ''
-  _editOldText = ''
-  mainLayer.batchDraw()
-}
-
-function startTextEdit(elId: string): void {
-  if (_pendingTextEditTimer !== null) {
-    window.clearTimeout(_pendingTextEditTimer)
-    _pendingTextEditTimer = null
-  }
-
-  if (editingTextId.value === elId) {
-    nextTick(() => {
-      textareaRef.value?.focus()
-      textareaRef.value?.select()
-    })
-    return
-  }
-
-  // 若有正在進行的編輯，先 commit 避免靜默丟棄。
-  // 切換到另一個 Text 時必須強制結束當前 session，不能被初始 blur 保護擋下。
-  if (editingTextId.value !== null) commitTextEdit()
-
-  const el = elementStore.get(elId)
-  if (!el || el.kind !== ElementKind.Text) return
-
-  // 對使用者來說，畫布上看到的是 renderer 的顯示值；編輯框也要以相同內容開啟，
-  // 否則新建 Text 會顯示為空白、甚至在焦點抖動時像是直接消失。
-  _editOldText = el.text ?? ''
-  editingTextDraft.value = _editOldText
-  editingTextId.value = elId
-  // 新建文字與雙擊進入編輯時，瀏覽器可能還在處理同一串 click/dblclick 焦點事件；
-  // 短時間內的 blur 視為雜訊，不應立刻結束編輯。
-  mainLayer.batchDraw()
-
-  nextTick(() => {
-    const ta = textareaRef.value
-    if (!ta) return
-    ta.value = editingTextDraft.value
-    _autoResizeTextarea(ta)
-    window.requestAnimationFrame(() => {
-      ta.focus()
-      ta.select()
-    })
-  })
-}
-
-function commitTextEdit(): void {
-  const id = editingTextId.value
-  if (!id) return
-  const newText = editingTextDraft.value
-  const trimmedText = newText.trim()
-  if (trimmedText.length === 0 && elementStore.get(id)) {
-    _exitTextEdit(id)
-    elementStore.remove(id)
-    return
-  }
-  // 只在文字實際改變且元素仍存在時才更新 store 並推 snapshot
-  if (newText !== _editOldText && elementStore.get(id)) {
-    elementStore.update(id, { text: newText })
-    elementStore.pushSnapshot()
-  }
-  _exitTextEdit(id)
-}
-
-function onTextareaBlur(): void {
-  commitTextEdit()
-}
-
-/**
- * Escape 取消：不寫入 store，保持 _editOldText（進入編輯前的狀態）。
- * 前提：見 _editOldText 的 ⚠️ 說明。
- * Escape → cancelTextEdit → _exitTextEdit（清空 id）→ Vue flush → 移除 textarea
- * → blur → commitTextEdit 被守衛攔截。路徑安全，不需額外 flag。
- */
-function cancelTextEdit(): void {
-  const id = editingTextId.value
-  if (!id) return
-  _exitTextEdit(id)
-}
-
-function scheduleTextEdit(elId: string): void {
-  // 新建文字後若只用 nextTick，常會撞上同一次 click 的後續事件，
-  // 使 textarea 剛 focus 又立刻 blur。延到下一個 macrotask 再進入編輯可避開這個焦點競爭。
-  if (_pendingTextEditTimer !== null) window.clearTimeout(_pendingTextEditTimer)
-  _pendingTextEditTimer = window.setTimeout(() => {
-    _pendingTextEditTimer = null
-    startTextEdit(elId)
-  }, 0)
-}
-
-function beginTextEdit(elId: string): void {
-  const selectId = rootSelectableId(elId)
-  elementStore.clearSelection()
-  elementStore.select(selectId)
-  _suppressNextStageClick = true
-  scheduleTextEdit(elId)
-}
-
-function createTextElementAt(world: Point): CanvasElement {
-  return {
-    id: newElementId(),
-    name: defaultElementName(ElementKind.Text),
-    kind: ElementKind.Text,
-    x: world.x,
-    y: world.y,
-    width: TEXT_ELEMENT_DEFAULT_WIDTH,
-    height: ELEMENT_DEFAULT_FONT_SIZE * TEXT_ELEMENT_DEFAULT_HEIGHT_RATIO,
-    rotation: 0,
-    scaleX: 1,
-    scaleY: 1,
-    opacity: 1,
-    visible: true,
-    locked: false,
-    childIds: [],
-    parentId: undefined,
-    text: '',
-    fontSize: ELEMENT_DEFAULT_FONT_SIZE,
-    fontFamily: ELEMENT_DEFAULT_FONT_FAMILY,
-    fontWeight: ELEMENT_DEFAULT_FONT_WEIGHT,
-    lineHeight: ELEMENT_DEFAULT_LINE_HEIGHT,
-    letterSpacing: ELEMENT_DEFAULT_LETTER_SPACING,
-    textAlign: ELEMENT_DEFAULT_TEXT_ALIGN,
-    fill: ELEMENT_DEFAULT_FILL,
-    stroke: ELEMENT_DEFAULT_STROKE,
-    strokeWidth: 0,
-  }
-}
-
-function onTextareaKeydown(e: KeyboardEvent): void {
-  e.stopPropagation()
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    cancelTextEdit()
-  }
-}
-
-function onTextareaInput(e: Event): void {
-  const ta = e.target as HTMLTextAreaElement
-  editingTextDraft.value = ta.value
-  _autoResizeTextarea(ta)
-}
-
-function _autoResizeTextarea(ta: HTMLTextAreaElement): void {
-  // 先歸零再讀 scrollHeight，確保縮小也能反映（部分瀏覽器在非零高度時 scrollHeight 不縮小）
-  ta.style.height = '0'
-  ta.style.height = `${ta.scrollHeight}px`
-}
-
-// ── Context Menu ───────────────────────────────────────────────────────────────
-const contextMenu = ref<ContextMenuState | null>(null)
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -1096,265 +930,6 @@ function commitDraw(g: Extract<GestureState, { kind: 'drawing' }>): CanvasElemen
   return { id: newElementId(), name: defaultElementName(data.kind), ...data }
 }
 
-// ── Canvas Actions ─────────────────────────────────────────────────────────────
-function deleteSelected(): void {
-  const ids = [...elementStore.selectedIds]
-  if (ids.length === 0) return
-  for (const id of ids) elementStore.remove(id)
-}
-
-/** 從目前選取集合中取出 root-level 元素 ID（group() 只接受 root-level）。 */
-function rootLevelSelectedIds(): string[] {
-  return [...elementStore.selectedIds].filter((id) => {
-    const el = elementStore.get(id)
-    return el && !el.parentId
-  })
-}
-
-function groupSelected(): void {
-  const ids = rootLevelSelectedIds()
-  if (ids.length < 2) return
-  const groupId = elementStore.group(ids)
-  if (!groupId) return
-  elementStore.clearSelection()
-  elementStore.select(groupId)
-}
-
-function ungroupSelected(): void {
-  const groups = elementStore.selectedElements.filter((el) => el.kind === ElementKind.Group)
-  if (groups.length === 0) return
-  elementStore.clearSelection()
-  for (const group of groups) {
-    for (const childId of elementStore.ungroup(group.id)) {
-      elementStore.select(childId, true)
-    }
-  }
-}
-
-function duplicateSelected(): void {
-  const selected = elementStore.selectedElements
-  if (selected.length === 0) return
-
-  const allCopies: CanvasElement[] = []
-  const rootCopyIds: string[] = []
-
-  for (const el of selected) {
-    if (el.kind === ElementKind.Group) {
-      const newGroupId = newElementId()
-      const childIdRemap = new Map(el.childIds.map((cid) => [cid, newElementId()]))
-
-      allCopies.push({
-        ...el,
-        id: newGroupId,
-        name: `${el.name} copy`,
-        x: el.x + 10,
-        y: el.y + 10,
-        childIds: el.childIds.map((cid) => childIdRemap.get(cid)!),
-      })
-      rootCopyIds.push(newGroupId)
-
-      for (const childId of el.childIds) {
-        const child = elementStore.get(childId)
-        if (child) {
-          allCopies.push({ ...child, id: childIdRemap.get(childId)!, parentId: newGroupId })
-        }
-      }
-    } else {
-      const copy = {
-        ...el,
-        id: newElementId(),
-        name: `${el.name} copy`,
-        x: el.x + 10,
-        y: el.y + 10,
-      }
-      allCopies.push(copy)
-      rootCopyIds.push(copy.id)
-    }
-  }
-
-  elementStore.addAll(allCopies)
-  elementStore.clearSelection()
-  for (const id of rootCopyIds) elementStore.select(id, true)
-}
-
-// ── Context Menu ───────────────────────────────────────────────────────────────
-
-/**
- * Native DOM contextmenu handler（綁在 container div）。
- * 使用 DOM 事件而非 stage.on('contextmenu')，確保右鍵在任何子節點皆可靠觸發；
- * 再透過 stage.getIntersection 做 Konva hit-test。
- */
-function onContainerContextMenu(e: MouseEvent): void {
-  if (!stage) return
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const stagePos = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-  const hit = stage.getIntersection(stagePos) as Konva.Shape | null
-  const elId = hit?.id() ?? null
-
-  // 右鍵點擊未選取的元素 → 先選取（提升至父群組）
-  // 右鍵點擊空白區域 → 保留現有選取，讓選單仍能對已選元素操作
-  if (elId) {
-    const selectId = rootSelectableId(elId)
-    if (!elementStore.selectedIds.has(selectId)) {
-      elementStore.clearSelection()
-      elementStore.select(selectId)
-    }
-  }
-
-  const selectedIds = elementStore.selectedIds
-  const selectedEls = elementStore.selectedElements
-  const rootSelected = selectedEls.filter((el) => !el.parentId)
-
-  contextMenu.value = {
-    x: e.clientX,
-    y: e.clientY,
-    hasSelection: selectedIds.size > 0,
-    canGroup: rootSelected.length >= 2,
-    canUngroup: selectedEls.some((el) => el.kind === ElementKind.Group),
-  }
-}
-
-function closeContextMenu(): void {
-  contextMenu.value = null
-}
-
-// ── Keyboard ───────────────────────────────────────────────────────────────────
-function keyCombo(e: KeyboardEvent): string {
-  const parts: string[] = []
-  if (e.ctrlKey || e.metaKey) parts.push('ctrl')
-  if (e.shiftKey) parts.push('shift')
-  parts.push(e.key.toLowerCase())
-  return parts.join('+')
-}
-
-const _keyCommands = new Map<string, (e: KeyboardEvent) => void>([
-  [
-    'delete',
-    (e) => {
-      e.preventDefault()
-      deleteSelected()
-    },
-  ],
-  [
-    'backspace',
-    (e) => {
-      e.preventDefault()
-      deleteSelected()
-    },
-  ],
-  [
-    'ctrl+z',
-    (e) => {
-      e.preventDefault()
-      elementStore.undo()
-    },
-  ],
-  [
-    'ctrl+y',
-    (e) => {
-      e.preventDefault()
-      elementStore.redo()
-    },
-  ],
-  [
-    'ctrl+shift+z',
-    (e) => {
-      e.preventDefault()
-      elementStore.redo()
-    },
-  ],
-  [
-    'ctrl+d',
-    (e) => {
-      e.preventDefault()
-      duplicateSelected()
-    },
-  ],
-  [
-    'ctrl+g',
-    (e) => {
-      e.preventDefault()
-      groupSelected()
-    },
-  ],
-  [
-    'ctrl+shift+g',
-    (e) => {
-      e.preventDefault()
-      ungroupSelected()
-    },
-  ],
-  [
-    'ctrl+a',
-    (e) => {
-      e.preventDefault()
-      elementStore.selectAll()
-    },
-  ],
-  [
-    ']',
-    (e) => {
-      e.preventDefault()
-      ;[...elementStore.selectedIds].forEach((id) => elementStore.bringToFront(id))
-      elementStore.pushSnapshot()
-    },
-  ],
-  [
-    '[',
-    (e) => {
-      e.preventDefault()
-      ;[...elementStore.selectedIds].forEach((id) => elementStore.sendToBack(id))
-      elementStore.pushSnapshot()
-    },
-  ],
-])
-
-function onKeydown(e: KeyboardEvent): void {
-  if (_gesture.kind === 'pen') {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      cancelPenGesture()
-      return
-    }
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      finishPenGesture(false)
-      return
-    }
-    if (e.key === 'Backspace' || e.key === 'Delete') {
-      e.preventDefault()
-      if (_gesture.points.length <= 1) {
-        cancelPenGesture()
-      } else {
-        _gesture.points = _gesture.points.slice(0, -1)
-        _gesture.activeIndex = _gesture.points.length - 1
-        _gesture.pointerDown = false
-        _gesture.hoverPoint = pointerWorld()
-        _gesture.closing = false
-        refreshPenGesture(_gesture)
-      }
-      return
-    }
-  }
-
-  if (e.key === 'Alt') {
-    e.preventDefault()
-    _altHeld = true
-    return
-  }
-  if (isTypingTarget(getDeepActiveElement())) return
-  _keyCommands.get(keyCombo(e))?.(e)
-}
-
-function onKeyup(e: KeyboardEvent): void {
-  if (e.key !== 'Alt') return
-  _altHeld = false
-  // Alt 放開：清除距離線，退回純尺寸標籤
-  const absSelected = elementStore.selectedElements.map(absoluteCoords)
-  measurementService.showIdle(absSelected, viewportStore.viewport.scale)
-  uiLayer.batchDraw()
-}
-
 // ── Lifecycle ──────────────────────────────────────────────────────────────────
 onMounted(() => {
   initStage()
@@ -1410,8 +985,8 @@ onMounted(() => {
     },
   )
 
-  document.addEventListener('keydown', onKeydown)
-  document.addEventListener('keyup', onKeyup)
+  document.addEventListener('keydown', keyboard.onKeydown)
+  document.addEventListener('keyup', keyboard.onKeyup)
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('resize', syncCommentOverlayRect)
   window.addEventListener('scroll', syncCommentOverlayRect, true)
@@ -1423,8 +998,8 @@ onUnmounted(() => {
   _resizeObserver?.disconnect()
   measurementService.destroy()
   stage?.destroy()
-  document.removeEventListener('keydown', onKeydown)
-  document.removeEventListener('keyup', onKeyup)
+  document.removeEventListener('keydown', keyboard.onKeydown)
+  document.removeEventListener('keyup', keyboard.onKeyup)
   document.removeEventListener('click', closeContextMenu)
   window.removeEventListener('resize', syncCommentOverlayRect)
   window.removeEventListener('scroll', syncCommentOverlayRect, true)
