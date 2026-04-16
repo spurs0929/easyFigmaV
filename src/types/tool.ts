@@ -11,6 +11,7 @@ export enum ToolType {
   Ellipse = 'ellipse',
   Line = 'line',
   Polygon = 'polygon',
+  Star = 'star',
   // 建立群組
   Frame = 'frame',
   Pen = 'pen',
@@ -123,6 +124,14 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolDef[]> = {
       /** 無快捷鍵（刻意留空，待後續版本規劃） */
       shortcuts: [],
       icon: 'M8,1 L15,6 L12,14 L4,14 L1,6 Z',
+      cursor: 'crosshair',
+    },
+    {
+      type: ToolType.Star,
+      label: 'Star',
+      group: ToolGroup.Shape,
+      shortcuts: [],
+      icon: 'M8,1.2 L9.8,5.3 L14.5,5.7 L11,8.7 L12.1,13.3 L8,10.9 L3.9,13.3 L5,8.7 L1.5,5.7 L6.2,5.3 Z',
       cursor: 'crosshair',
     },
   ],

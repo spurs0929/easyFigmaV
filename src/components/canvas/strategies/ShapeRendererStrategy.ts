@@ -298,6 +298,49 @@ class PolygonRenderer implements DrawableRenderer {
   createElement(_tool: ToolType, start: Point, end: Point) { return rectBoundedElement(ElementKind.Polygon, start, end) }
 }
 
+class StarRenderer implements DrawableRenderer {
+  readonly konvaClassName = 'Star'
+  readonly elementKinds = [ElementKind.Star] as const
+  readonly toolTypes = [ToolType.Star] as const
+
+  private toConfig(el: CanvasElement, attrs: BaseShapeAttrs) {
+    const outerRadius = Math.min(el.width, el.height) / 2
+    return {
+      ...konvaAttrs(attrs),
+      x: el.x + el.width / 2,
+      y: el.y + el.height / 2,
+      numPoints: 5,
+      innerRadius: outerRadius * 0.5,
+      outerRadius,
+    }
+  }
+
+  build(el: CanvasElement, attrs: BaseShapeAttrs): Konva.Shape { return new Konva.Star(this.toConfig(el, attrs)) }
+  patch(shape: Konva.Shape, el: CanvasElement, attrs: BaseShapeAttrs): void { shape.setAttrs(this.toConfig(el, attrs)) }
+  buildGhost(start: Point, strokeW: number): Konva.Shape {
+    return new Konva.Star({
+      ...GHOST_STYLE,
+      x: start.x,
+      y: start.y,
+      numPoints: 5,
+      innerRadius: 0,
+      outerRadius: 0,
+      strokeWidth: strokeW,
+    })
+  }
+  updateGhost(ghost: Konva.Shape, start: Point, current: Point): void {
+    const { x, y, width, height } = rectGeom(start, current)
+    const outerRadius = Math.min(width, height) / 2
+    ghost.setAttrs({
+      x: x + width / 2,
+      y: y + height / 2,
+      innerRadius: outerRadius * 0.5,
+      outerRadius,
+    })
+  }
+  createElement(_tool: ToolType, start: Point, end: Point) { return rectBoundedElement(ElementKind.Star, start, end) }
+}
+
 class VectorRenderer implements DrawableRenderer {
   readonly konvaClassName = 'Shape'
   readonly elementKinds = [ElementKind.Vector] as const
@@ -467,6 +510,7 @@ const ALL_DRAWABLES: DrawableRenderer[] = [
   new EllipseRenderer(),
   new LineRenderer(),
   new PolygonRenderer(),
+  new StarRenderer(),
   new VectorRenderer(),
   new TextRenderer(),
 ]

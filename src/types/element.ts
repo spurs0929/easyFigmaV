@@ -43,6 +43,7 @@ export enum ElementKind {
   Ellipse = 'ellipse',
   Line = 'line',
   Polygon = 'polygon',
+  Star = 'star',
   Vector = 'vector',
   Text = 'text',
   Frame = 'frame',
