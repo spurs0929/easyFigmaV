@@ -12,7 +12,7 @@ import {
   normalizeVectorPath,
 } from '@/types/element'
 import { ToolType } from '@/types/tool'
-import type { GestureState, PenDraftPoint } from '@/types/canvas'
+import type { GestureState, PenDraftPoint, SelectionCornerHandle } from '@/types/canvas'
 import { useCanvasActions } from '@/composables/useCanvasActions'
 import { useContextMenu } from '@/composables/useContextMenu'
 import { useTextEdit } from '@/composables/useTextEdit'
@@ -108,6 +108,8 @@ let stage: Konva.Stage
 let gridLayer: Konva.Layer
 let mainLayer: Konva.Layer
 let uiLayer: Konva.Layer
+let selectionLayer: Konva.Layer
+let selectionOverlayGroup: Konva.Group
 let vectorOverlayGroup: Konva.Group
 
 // ── Shape pool（O(k) diff） ───────────────────────────────────────────────────
@@ -128,6 +130,14 @@ let _gridVisible = initGridVisible(viewportStore.viewport.scale)
 const PEN_CLOSE_DISTANCE_SCREEN_PX = 10
 const PEN_HANDLE_MIN_DRAG_WORLD = 2
 const PEN_CONTROL_RADIUS_SCREEN_PX = 4
+const SELECTION_HANDLE_SCREEN_PX = 8
+const SELECTION_MIN_SIZE_WORLD = 1
+const COLOR_HANDLE_FILL = '#ffffff'
+const HANDLE_ATTR = {
+  type: 'selectionHandleType',
+  corner: 'selectionHandleCorner',
+  elementId: 'selectionElementId',
+} as const
 const TEXT_ELEMENT_DEFAULT_WIDTH = 200
 const TEXT_ELEMENT_DEFAULT_HEIGHT_RATIO = 1.5
 const TEXT_OVERLAY_MIN_WIDTH_RATIO = 2
@@ -187,6 +197,10 @@ function screenToWorld(px: number): number {
   return px / viewportStore.viewport.scale
 }
 
+function screenLengthToWorld(px: number): number {
+  return px / viewportStore.viewport.scale
+}
+
 function cloneDraftPoint(point: PenDraftPoint): PenDraftPoint {
   return {
     x: point.x,
@@ -205,6 +219,69 @@ function defaultElementName(kind: ElementKind): string {
     kind === ElementKind.Vector ? 'Vector' : kind.charAt(0).toUpperCase() + kind.slice(1)
   const count = Object.values(elementStore.byId).filter((el) => el.kind === kind).length + 1
   return `${prefix} ${count}`
+}
+
+function supportsSelectionOverlay(el: CanvasElement): boolean {
+  return el.kind !== ElementKind.Vector
+}
+
+function warnInvalidSelectionHandle(handle: string): void {
+  if (import.meta.env.DEV) {
+    console.warn(`[selection] unsupported handle: ${handle}`)
+  }
+}
+
+interface SelectionBounds {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+interface ResizeResult {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type ResizeHandleStrategy = (world: Point, bounds: SelectionBounds, minSize: number) => ResizeResult
+
+const RESIZE_HANDLE_STRATEGIES: Record<SelectionCornerHandle, ResizeHandleStrategy> = {
+  tl: (world, bounds, minSize) => {
+    const x = Math.min(world.x, bounds.right - minSize)
+    const y = Math.min(world.y, bounds.bottom - minSize)
+    return {
+      x,
+      y,
+      width: bounds.right - x,
+      height: bounds.bottom - y,
+    }
+  },
+  tr: (world, bounds, minSize) => {
+    const y = Math.min(world.y, bounds.bottom - minSize)
+    return {
+      x: bounds.left,
+      y,
+      width: Math.max(minSize, world.x - bounds.left),
+      height: bounds.bottom - y,
+    }
+  },
+  br: (world, bounds, minSize) => ({
+    x: bounds.left,
+    y: bounds.top,
+    width: Math.max(minSize, world.x - bounds.left),
+    height: Math.max(minSize, world.y - bounds.top),
+  }),
+  bl: (world, bounds, minSize) => {
+    const x = Math.min(world.x, bounds.right - minSize)
+    return {
+      x,
+      y: bounds.top,
+      width: bounds.right - x,
+      height: Math.max(minSize, world.y - bounds.top),
+    }
+  },
 }
 
 function vectorWorldPoints(el: CanvasElement): VectorPoint[] {
@@ -330,6 +407,106 @@ function renderSelectedVectorControls(): void {
     viewportStore.viewport.scale,
   )
   uiLayer.batchDraw()
+}
+
+function renderSelectionOverlay(): void {
+  selectionOverlayGroup.destroyChildren()
+
+  if (_gesture.kind === 'pen') return
+
+  const selected = elementStore.selectedElements
+  if (selected.length !== 1) return
+
+  const selectedElement = selected[0]
+  if (!supportsSelectionOverlay(selectedElement)) return
+
+  const abs = absoluteCoords(selectedElement)
+  const scale = viewportStore.viewport.scale
+  const worldPx = (value: number) => value / scale
+  const strokeWidth = SELECTION_STROKE_SCREEN_PX / scale
+  const handleSize = worldPx(SELECTION_HANDLE_SCREEN_PX)
+  const halfHandle = handleSize / 2
+  const left = abs.x
+  const top = abs.y
+  const right = abs.x + abs.width
+  const bottom = abs.y + abs.height
+
+  selectionOverlayGroup.add(
+    new Konva.Rect({
+      x: left,
+      y: top,
+      width: abs.width,
+      height: abs.height,
+      stroke: COLOR_SELECTION,
+      strokeWidth,
+      listening: false,
+    }),
+  )
+
+  const handles: Array<{ point: Point; corner: SelectionCornerHandle }> = [
+    { point: { x: left, y: top }, corner: 'tl' },
+    { point: { x: right, y: top }, corner: 'tr' },
+    { point: { x: right, y: bottom }, corner: 'br' },
+    { point: { x: left, y: bottom }, corner: 'bl' },
+  ]
+
+  for (const { point, corner } of handles) {
+    selectionOverlayGroup.add(
+      new Konva.Rect({
+        x: point.x - halfHandle,
+        y: point.y - halfHandle,
+        width: handleSize,
+        height: handleSize,
+        fill: COLOR_HANDLE_FILL,
+        stroke: COLOR_SELECTION,
+        strokeWidth,
+        listening: true,
+        [HANDLE_ATTR.type]: 'resize',
+        [HANDLE_ATTR.corner]: corner,
+        [HANDLE_ATTR.elementId]: selectedElement.id,
+      }),
+    )
+  }
+}
+
+function startResizeGesture(id: string, handle: SelectionCornerHandle): void {
+  const el = elementStore.get(id)
+  if (!el) return
+  _isDragging = true
+  _gesture = {
+    kind: 'resizing',
+    id,
+    handle,
+    origin: { x: el.x, y: el.y, width: el.width, height: el.height },
+  }
+}
+
+function applyResizeGesture(g: Extract<GestureState, { kind: 'resizing' }>, world: Point): void {
+  const minSize = Math.min(screenLengthToWorld(8), SELECTION_MIN_SIZE_WORLD)
+  const strategy = RESIZE_HANDLE_STRATEGIES[g.handle]
+  if (!strategy) {
+    warnInvalidSelectionHandle(String(g.handle))
+    return
+  }
+  const bounds: SelectionBounds = {
+    left: g.origin.x,
+    top: g.origin.y,
+    right: g.origin.x + g.origin.width,
+    bottom: g.origin.y + g.origin.height,
+  }
+  const next = strategy(world, bounds, minSize)
+
+  const el = elementStore.get(g.id)
+  if (!el) return
+
+  const patch: Partial<CanvasElement> = {
+    x: next.x,
+    y: next.y,
+    width: next.width,
+    height: next.height,
+  }
+
+  elementStore.update(g.id, patch)
 }
 
 function refreshPenGesture(g: Extract<GestureState, { kind: 'pen' }>): void {
@@ -577,10 +754,13 @@ function initStage(): void {
   stage = new Konva.Stage({ container: el, width: w, height: h })
   gridLayer = new Konva.Layer({ listening: false })
   mainLayer = new Konva.Layer()
-  uiLayer = new Konva.Layer({ listening: false })
+  uiLayer = new Konva.Layer()
+  selectionLayer = new Konva.Layer()
+  selectionOverlayGroup = new Konva.Group()
   vectorOverlayGroup = new Konva.Group({ listening: false })
-  stage.add(gridLayer, mainLayer, uiLayer)
+  stage.add(gridLayer, mainLayer, uiLayer, selectionLayer)
   measurementService.init(uiLayer)
+  selectionLayer.add(selectionOverlayGroup)
   uiLayer.add(vectorOverlayGroup)
 
   registerStageEvents()
@@ -645,8 +825,18 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
   if (e.evt.button !== 0 && e.evt.button !== 1) return
   const tool = toolStore.activeTool
   const world = pointerWorld()
+  const targetAttrs = e.target.getAttrs() as Record<string, unknown>
+  const handleType = targetAttrs[HANDLE_ATTR.type] as 'resize' | undefined
+  const handleCorner = targetAttrs[HANDLE_ATTR.corner] as SelectionCornerHandle | undefined
+  const handleElementId = targetAttrs[HANDLE_ATTR.elementId] as string | undefined
   const targetId = e.target !== stage ? (e.target as Konva.Shape).id() : null
   const targetEl = targetId ? elementStore.get(targetId) : undefined
+
+  if (handleType && handleCorner && handleElementId) {
+    e.cancelBubble = true
+    startResizeGesture(handleElementId, handleCorner)
+    return
+  }
 
   // 中鍵 or Hand 工具 → 平移
   if (e.evt.button === 1 || tool === ToolType.Hand) {
@@ -776,6 +966,11 @@ function onMouseMove(): void {
     return
   }
 
+  if (g.kind === 'resizing') {
+    applyResizeGesture(g, pointerWorld())
+    return
+  }
+
   if (g.kind === 'marquee') {
     const world = pointerWorld()
     const x = Math.min(g.start.x, world.x)
@@ -859,6 +1054,14 @@ function onMouseUp(): void {
     _isDragging = false
     _gesture = { kind: 'idle' }
     // 拖曳結束：清除吸附線，退回純尺寸標籤
+    measurementService.hide()
+    return
+  }
+
+  if (g.kind === 'resizing') {
+    elementStore.pushSnapshot()
+    _isDragging = false
+    _gesture = { kind: 'idle' }
     measurementService.hide()
     return
   }
@@ -961,6 +1164,7 @@ onMounted(() => {
       measurementService.showIdle(absSelected, vp.scale)
     }
 
+    renderSelectionOverlay()
     renderSelectedVectorControls()
     stage.batchDraw()
   })
