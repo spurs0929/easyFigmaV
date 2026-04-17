@@ -16,7 +16,6 @@ export enum ToolType {
   Frame = 'frame',
   Pen = 'pen',
   Slice = 'slice',
-  Component = 'component',
   // 文字群組
   Text = 'text',
   // 評論群組
@@ -159,14 +158,6 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolDef[]> = {
       shortcuts: [{ key: 's' }],
       icon: 'M1,1 L15,15 M1,8 L8,1 M8,15 L15,8',
       cursor: 'crosshair',
-    },
-    {
-      type: ToolType.Component,
-      label: 'Component',
-      group: ToolGroup.Creation,
-      shortcuts: [{ key: 'k', ctrl: true }],
-      icon: 'M8,1 L15,8 L8,15 L1,8 Z',
-      cursor: 'default',
     },
   ],
   [ToolGroup.Text]: [
