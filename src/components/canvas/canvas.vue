@@ -43,6 +43,7 @@ import { cullingService } from './services/ViewportCullingService'
 import { measurementService } from './services/MeasurementService'
 import { useCommentStore } from '@/store/comment'
 import CommentOverlay from './CommentOverlay.vue'
+import SelectionContextMenu from '@/components/context-menu/SelectionContextMenu.vue'
 
 // ── Stores ─────────────────────────────────────────────────────────────────────
 const elementStore = useElementStore()
@@ -1333,78 +1334,7 @@ onUnmounted(() => {
 <template>
   <div ref="containerRef" class="canvas-container" @contextmenu.prevent="onContainerContextMenu">
     <!-- 右鍵選單：Teleport 至 body 避免與 Konva DOM 衝突 -->
-    <Teleport to="body">
-      <ul
-        v-if="contextMenu"
-        class="ctx-menu"
-        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
-        @click.stop
-      >
-        <template v-if="contextMenu.hasSelection">
-          <li
-            class="ctx-item"
-            @click="elementStore.bringToFront([...elementStore.selectedIds][0]); closeContextMenu()"
-          >
-            Bring to Front <kbd>]</kbd>
-          </li>
-          <li
-            class="ctx-item"
-            @click="[...elementStore.selectedIds].forEach((id) => elementStore.moveUp(id)); closeContextMenu()"
-          >
-            Move Up
-          </li>
-          <li
-            class="ctx-item"
-            @click="[...elementStore.selectedIds].forEach((id) => elementStore.moveDown(id)); closeContextMenu()"
-          >
-            Move Down
-          </li>
-          <li
-            class="ctx-item"
-            @click="elementStore.sendToBack([...elementStore.selectedIds][0]); closeContextMenu()"
-          >
-            Send to Back <kbd>[</kbd>
-          </li>
-          <li class="ctx-sep" />
-          <li
-            v-if="contextMenu.canGroup"
-            class="ctx-item"
-            @click="groupSelected(); closeContextMenu()"
-          >
-            Group <kbd>Ctrl G</kbd>
-          </li>
-          <li
-            v-if="contextMenu.canUngroup"
-            class="ctx-item"
-            @click="ungroupSelected(); closeContextMenu()"
-          >
-            Ungroup <kbd>Ctrl Shift G</kbd>
-          </li>
-          <li class="ctx-sep" />
-          <li
-            class="ctx-item"
-            @click="duplicateSelected(); closeContextMenu()"
-          >
-            Duplicate <kbd>Ctrl D</kbd>
-          </li>
-          <li class="ctx-sep" />
-          <li
-            class="ctx-item ctx-item--danger"
-            @click="deleteSelected(); closeContextMenu()"
-          >
-            Delete <kbd>Del</kbd>
-          </li>
-        </template>
-        <template v-else>
-          <li
-            class="ctx-item"
-            @click="elementStore.selectAll(); closeContextMenu()"
-          >
-            Select All <kbd>Ctrl A</kbd>
-          </li>
-        </template>
-      </ul>
-    </Teleport>
+    <SelectionContextMenu :context-menu="contextMenu" @close="closeContextMenu" />
 
     <!-- Comment overlay：每個評論渲染一個釘針，跟隨 viewport 座標 -->
     <CommentOverlay

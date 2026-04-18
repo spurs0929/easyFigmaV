@@ -1,0 +1,74 @@
+$color-menu-bg: #1e1e1e;
+$color-menu-border: #333;
+$color-menu-hover: #2d2d2d;
+$color-text: #c9d1d9;
+$color-text-muted: #6b7280;
+$color-danger: #f87171;
+$color-danger-hover: rgba(248, 113, 113, 0.1);
+
+$menu-min-width: 180px;
+$menu-padding-v: 4px;
+$menu-radius: 6px;
+$menu-item-padding: 6px 12px;
+$menu-item-gap: 16px;
+$menu-item-radius: 4px;
+$menu-item-margin-h: 4px;
+$menu-item-font: 13px;
+$menu-kbd-font: 11px;
+$menu-sep-height: 1px;
+$menu-sep-margin-v: 4px;
+
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: $menu-min-width;
+  padding: $menu-padding-v 0;
+  margin: 0;
+  list-style: none;
+  user-select: none;
+  background: $color-menu-bg;
+  border: 1px solid $color-menu-border;
+  border-radius: $menu-radius;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $menu-item-gap;
+  margin: 0 $menu-item-margin-h;
+  padding: $menu-item-padding;
+  font-size: $menu-item-font;
+  color: $color-text;
+  cursor: default;
+  border-radius: $menu-item-radius;
+
+  kbd {
+    padding: 0;
+    font-size: $menu-kbd-font;
+    color: $color-text-muted;
+    font-family: inherit;
+    background: none;
+    border: none;
+  }
+
+  &:hover {
+    background: $color-menu-hover;
+    color: #fff;
+  }
+
+  &--danger {
+    color: $color-danger;
+
+    &:hover {
+      background: $color-danger-hover;
+    }
+  }
+}
+
+.ctx-sep {
+  height: $menu-sep-height;
+  margin: $menu-sep-margin-v 0;
+  background: $color-menu-border;
+}
