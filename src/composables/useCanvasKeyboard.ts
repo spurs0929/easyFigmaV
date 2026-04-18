@@ -7,6 +7,7 @@ export interface CanvasKeyboardOptions {
   /** 讀取當前 gesture 物件（非響應式，直接回傳可變參考）。 */
   getGesture: () => GestureState
   cancelPenGesture: () => void
+  cancelPencilGesture: () => void
   finishPenGesture: (close: boolean) => void
   refreshPenGesture: (g: Extract<GestureState, { kind: 'pen' }>) => void
   pointerWorld: () => Point
@@ -145,6 +146,12 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
         }
         return
       }
+    }
+
+    if (g.kind === 'pencil' && e.key === 'Escape') {
+      e.preventDefault()
+      opts.cancelPencilGesture()
+      return
     }
 
     if (e.key === 'Alt') {

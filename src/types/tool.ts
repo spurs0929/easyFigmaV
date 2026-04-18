@@ -15,6 +15,7 @@ export enum ToolType {
   // 建立群組
   Frame = 'frame',
   Pen = 'pen',
+  Pencil = 'pencil',
   Slice = 'slice',
   // 文字群組
   Text = 'text',
@@ -149,6 +150,14 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolDef[]> = {
       group: ToolGroup.Creation,
       shortcuts: [{ key: 'p' }],
       icon: 'M2,14 Q4,10 8,8 Q12,6 14,2 L12,4 Q10,8 6,10 Z',
+      cursor: 'crosshair',
+    },
+    {
+      type: ToolType.Pencil,
+      label: 'Pencil',
+      group: ToolGroup.Creation,
+      shortcuts: [{ key: 'p', shift: true }],
+      icon: 'M2,11 Q4,7 8,10 T14,7 M11.5,5.5 L14,3 L13,6.5 Z',
       cursor: 'crosshair',
     },
     {

@@ -58,6 +58,7 @@ const { contextMenu, onContainerContextMenu, closeContextMenu } = useContextMenu
 const keyboard = useCanvasKeyboard({
   getGesture: () => _gesture,
   cancelPenGesture,
+  cancelPencilGesture,
   finishPenGesture,
   refreshPenGesture,
   pointerWorld,
@@ -130,6 +131,8 @@ let _gridVisible = initGridVisible(viewportStore.viewport.scale)
 const PEN_CLOSE_DISTANCE_SCREEN_PX = 10
 const PEN_HANDLE_MIN_DRAG_WORLD = 2
 const PEN_CONTROL_RADIUS_SCREEN_PX = 4
+const PENCIL_SAMPLE_DISTANCE_SCREEN_PX = 4
+const PENCIL_MIN_COMMIT_DISTANCE_SCREEN_PX = 2
 const SELECTION_HANDLE_SCREEN_PX = 8
 const SELECTION_MIN_SIZE_WORLD = 1
 const COLOR_HANDLE_FILL = '#ffffff'
@@ -221,6 +224,10 @@ function defaultElementName(kind: ElementKind): string {
   return `${prefix} ${count}`
 }
 
+function isVectorDraftGesture(gesture: GestureState): boolean {
+  return gesture.kind === 'pen' || gesture.kind === 'pencil'
+}
+
 function supportsSelectionOverlay(el: CanvasElement): boolean {
   return el.kind !== ElementKind.Vector
 }
@@ -297,7 +304,31 @@ function vectorWorldPoints(el: CanvasElement): VectorPoint[] {
   }))
 }
 
-function buildPenPreviewShape(scale: number): Konva.Shape {
+function buildVectorElement(points: VectorPoint[], closePath: boolean): CanvasElement | null {
+  if (points.length < 2) return null
+
+  const normalized = normalizeVectorPath(points)
+  return {
+    id: newElementId(),
+    name: defaultElementName(ElementKind.Vector),
+    kind: ElementKind.Vector,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    opacity: 1,
+    visible: true,
+    locked: false,
+    childIds: [],
+    parentId: undefined,
+    fill: closePath ? { type: 'solid', color: '#ffffff' } : { type: 'solid', color: 'transparent' },
+    stroke: { type: 'solid', color: '#6366f1' },
+    strokeWidth: 1,
+    closed: closePath,
+    ...normalized,
+  }
+}
+
+function buildVectorPreviewShape(scale: number): Konva.Shape {
   return new Konva.Shape({
     x: 0,
     y: 0,
@@ -392,7 +423,7 @@ function renderPenControls(group: Konva.Group, points: PenDraftPoint[], scale: n
 function renderSelectedVectorControls(): void {
   vectorOverlayGroup.destroyChildren()
 
-  if (_gesture.kind === 'pen') return
+  if (isVectorDraftGesture(_gesture)) return
 
   // 只有單選 Vector 時顯示控制點，避免多選或建立中手勢互相干擾。
   const selected = elementStore.selectedElements
@@ -412,7 +443,7 @@ function renderSelectedVectorControls(): void {
 function renderSelectionOverlay(): void {
   selectionOverlayGroup.destroyChildren()
 
-  if (_gesture.kind === 'pen') return
+  if (isVectorDraftGesture(_gesture)) return
 
   const selected = elementStore.selectedElements
   if (selected.length !== 1) return
@@ -539,25 +570,8 @@ function finishPenGesture(closePath: boolean): void {
   // 至少要兩個錨點才有意義；不足時視為取消，不建立空 Vector。
   if (points.length < 2) return
 
-  const normalized = normalizeVectorPath(points)
-  const el: CanvasElement = {
-    id: newElementId(),
-    name: defaultElementName(ElementKind.Vector),
-    kind: ElementKind.Vector,
-    rotation: 0,
-    scaleX: 1,
-    scaleY: 1,
-    opacity: 1,
-    visible: true,
-    locked: false,
-    childIds: [],
-    parentId: undefined,
-    fill: closePath ? { type: 'solid', color: '#ffffff' } : { type: 'solid', color: 'transparent' },
-    stroke: { type: 'solid', color: '#6366f1' },
-    strokeWidth: 1,
-    closed: closePath,
-    ...normalized,
-  }
+  const el = buildVectorElement(points, closePath)
+  if (!el) return
 
   elementStore.add(el)
   elementStore.clearSelection()
@@ -572,7 +586,7 @@ function cancelPenGesture(): void {
 }
 
 function startPenGesture(world: Point): void {
-  const path = buildPenPreviewShape(viewportStore.viewport.scale)
+  const path = buildVectorPreviewShape(viewportStore.viewport.scale)
   const controls = new Konva.Group({ listening: false })
   uiLayer.add(path)
   uiLayer.add(controls)
@@ -613,6 +627,78 @@ function extendPenGesture(world: Point): void {
 }
 
 /** 組裝 Konva 所需的 shape 屬性（含 Paint→string 轉換）。 */
+function refreshPencilGesture(g: Extract<GestureState, { kind: 'pencil' }>): void {
+  const lastPoint = g.points.at(-1)
+  const previewEnd =
+    lastPoint && !isPointNear(lastPoint, g.hoverPoint, screenToWorld(0.5)) ? g.hoverPoint : null
+
+  g.path.setAttrs({
+    vectorPoints: g.points.map(cloneDraftPoint),
+    previewEnd,
+    closed: false,
+    fill: '',
+    strokeWidth: 1 / viewportStore.viewport.scale,
+  })
+  uiLayer.batchDraw()
+}
+
+function destroyPencilGesture(g: Extract<GestureState, { kind: 'pencil' }>): void {
+  g.path.destroy()
+  uiLayer.batchDraw()
+}
+
+function appendPencilPoint(
+  g: Extract<GestureState, { kind: 'pencil' }>,
+  world: Point,
+  minDistancePx = PENCIL_SAMPLE_DISTANCE_SCREEN_PX,
+): void {
+  const lastPoint = g.points.at(-1)
+  if (!lastPoint) {
+    g.points = [{ x: world.x, y: world.y }]
+    return
+  }
+
+  if (Math.hypot(world.x - lastPoint.x, world.y - lastPoint.y) < screenToWorld(minDistancePx)) {
+    return
+  }
+
+  g.points = [...g.points, { x: world.x, y: world.y }]
+}
+
+function finishPencilGesture(): void {
+  const g = _gesture
+  if (g.kind !== 'pencil') return
+
+  const points = g.points.map(cloneDraftPoint)
+  destroyPencilGesture(g)
+  _gesture = { kind: 'idle' }
+
+  const el = buildVectorElement(points, false)
+  if (!el) return
+  elementStore.add(el)
+  elementStore.clearSelection()
+  elementStore.select(el.id)
+}
+
+function cancelPencilGesture(): void {
+  const g = _gesture
+  if (g.kind !== 'pencil') return
+  destroyPencilGesture(g)
+  _gesture = { kind: 'idle' }
+}
+
+function startPencilGesture(world: Point): void {
+  const path = buildVectorPreviewShape(viewportStore.viewport.scale)
+  uiLayer.add(path)
+  _gesture = {
+    kind: 'pencil',
+    points: [{ x: world.x, y: world.y }],
+    path,
+    hoverPoint: world,
+  }
+  refreshPencilGesture(_gesture)
+}
+
 function buildShapeAttrs(
   el: CanvasElement,
   selectedIds: ReadonlySet<string>,
@@ -883,6 +969,11 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
     return
   }
   // 其餘工具 → 繪製
+  if (tool === ToolType.Pencil) {
+    _suppressNextStageClick = true
+    startPencilGesture(world)
+    return
+  }
   startDrawing(tool, world)
 }
 
@@ -1016,6 +1107,14 @@ function onMouseMove(): void {
   }
 
   // 閒置狀態 + Alt 按下：顯示游標所指元素與選取框之間的距離
+  if (g.kind === 'pencil') {
+    const world = pointerWorld()
+    g.hoverPoint = world
+    appendPencilPoint(g, world)
+    refreshPencilGesture(g)
+    return
+  }
+
   if (_altHeld && elementStore.selectedIds.size > 0) {
     const ptr = stage.getPointerPosition()
     const hit = ptr ? (stage.getIntersection(ptr) as Konva.Shape | null) : null
@@ -1085,6 +1184,14 @@ function onMouseUp(): void {
     if (newEl?.kind === ElementKind.Text) {
       nextTick(() => scheduleTextEdit(newEl.id))
     }
+    return
+  }
+
+  if (g.kind === 'pencil') {
+    const world = pointerWorld()
+    g.hoverPoint = world
+    appendPencilPoint(g, world, PENCIL_MIN_COMMIT_DISTANCE_SCREEN_PX)
+    finishPencilGesture()
     return
   }
 
@@ -1185,6 +1292,18 @@ onMounted(() => {
       if (prevTool === ToolType.Pen && tool !== ToolType.Pen && _gesture.kind === 'pen') {
         // 使用者切走工具時自動收尾，避免畫面留下一個無法操作的 Pen 草稿。
         finishPenGesture(false)
+      }
+    },
+  )
+
+  watch(
+    () => toolStore.activeTool,
+    (tool, prevTool) => {
+      if (prevTool === ToolType.Pen && tool !== ToolType.Pen && _gesture.kind === 'pen') {
+        finishPenGesture(false)
+      }
+      if (prevTool === ToolType.Pencil && tool !== ToolType.Pencil && _gesture.kind === 'pencil') {
+        finishPencilGesture()
       }
     },
   )

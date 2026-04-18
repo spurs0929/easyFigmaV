@@ -29,6 +29,12 @@ export type GestureState =
     hoverPoint: Point | null
     closing: boolean
   }
+  | {
+    kind: 'pencil'
+    points: PenDraftPoint[]
+    path: Konva.Shape
+    hoverPoint: Point
+  }
 
 export interface ContextMenuState {
   x: number
