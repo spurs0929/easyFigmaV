@@ -152,8 +152,6 @@ const TEXT_OVERLAY_Z_INDEX = 2000
 // ── Measurement overlay 狀態 ──────────────────────────────────────────────────
 /** 拖曳進行中旗標；由 watchEffect 讀取以決定是否更新覆蓋層。 */
 let _isDragging = false
-/** Alt 鍵是否按下；用於 Alt+Hover 距離量測功能。 */
-let _altHeld = false
 
 // ── Comment Placement ──────────────────────────────────────────────────────────
 
@@ -1116,7 +1114,7 @@ function onMouseMove(): void {
     return
   }
 
-  if (_altHeld && elementStore.selectedIds.size > 0) {
+  if (keyboard.isAltHeld() && elementStore.selectedIds.size > 0) {
     const ptr = stage.getPointerPosition()
     const hit = ptr ? (stage.getIntersection(ptr) as Konva.Shape | null) : null
     const hitId = hit?.id()
