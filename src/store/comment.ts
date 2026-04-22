@@ -1,30 +1,10 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { type CanvasComment, newCommentId } from '@/types/comment'
+import { isCanvasComment, type CanvasComment, newCommentId } from '@/types/comment'
+import { cloneCommentSnapshots } from '@/types/document'
 
 /** localStorage 中儲存評論陣列的鍵名。 */
 const STORAGE_KEY = 'easyfigma_comments'
-
-/**
- * 型別守衛：驗證從 localStorage 反序列化的原始物件是否符合 CanvasComment 結構。
- * - 座標使用 Number.isFinite 過濾掉 NaN / Infinity（JSON 本不能表示這兩者，但防禦性地處理）。
- * - createdAt > 0 排除時間戳為 0 的損壞資料。
- */
-function isValidComment(v: unknown): v is CanvasComment {
-  if (!v || typeof v !== 'object') return false
-  const c = v as Record<string, unknown>
-  return (
-    typeof c.id === 'string' &&
-    typeof c.worldX === 'number' &&
-    Number.isFinite(c.worldX) &&
-    typeof c.worldY === 'number' &&
-    Number.isFinite(c.worldY) &&
-    typeof c.text === 'string' &&
-    typeof c.resolved === 'boolean' &&
-    typeof c.createdAt === 'number' &&
-    c.createdAt > 0
-  )
-}
 
 /**
  * 從 localStorage 載入評論資料，失敗時安全返回空陣列。
@@ -36,7 +16,7 @@ function loadFromStorage(): CanvasComment[] {
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(isValidComment)
+    return parsed.filter(isCanvasComment)
   } catch {
     return []
   }
@@ -91,12 +71,18 @@ function bindLifecycle(flush: () => void): void {
 export const useCommentStore = defineStore('comment', () => {
   /** 評論的私有響應式陣列；外部透過 computed `comments` 存取唯讀快照。 */
   const _comments = ref<CanvasComment[]>(loadFromStorage())
+  const _documentRevision = ref(0)
 
   /**
    * 對外公開的唯讀評論列表。
    * .slice() 建立淺拷貝，防止外部直接操作內部陣列，同時保持 Vue 響應追蹤。
    */
   const comments = computed<readonly CanvasComment[]>(() => _comments.value.slice())
+  const documentRevision = computed(() => _documentRevision.value)
+
+  function touchDocument(): void {
+    _documentRevision.value++
+  }
 
   /** 立即將當前評論陣列寫入 localStorage。 */
   function flush(): void {
@@ -126,6 +112,7 @@ export const useCommentStore = defineStore('comment', () => {
     }
     _comments.value.push(comment)
     persist()
+    touchDocument()
     return comment
   }
 
@@ -141,6 +128,7 @@ export const useCommentStore = defineStore('comment', () => {
     }
     target.text = text
     persist()
+    touchDocument()
     return true
   }
 
@@ -151,11 +139,13 @@ export const useCommentStore = defineStore('comment', () => {
   function toggleResolved(id: string): boolean {
     const target = _comments.value.find((c) => c.id === id)
     if (!target) {
-      if (import.meta.env.DEV) console.warn(`[CommentStore] toggleResolved: id "${id}" does not exist`)
+      if (import.meta.env.DEV)
+        console.warn(`[CommentStore] toggleResolved: id "${id}" does not exist`)
       return false
     }
     target.resolved = !target.resolved
     persist()
+    touchDocument()
     return true
   }
 
@@ -172,8 +162,31 @@ export const useCommentStore = defineStore('comment', () => {
     }
     _comments.value.splice(idx, 1)
     persist()
+    touchDocument()
     return true
   }
 
-  return { comments, add, updateText, toggleResolved, remove, flush }
+  /** 以外部快照完整取代評論陣列（載入存檔 / 匯入 JSON 時使用）；structuredClone 確保資料隔離。 */
+  function replaceAll(comments: readonly CanvasComment[]): void {
+    _comments.value = cloneCommentSnapshots(comments)
+    persist()
+    touchDocument()
+  }
+
+  /** 取得當前評論陣列的深拷貝，供 documentStore 建立快照使用。 */
+  function snapshot(): CanvasComment[] {
+    return cloneCommentSnapshots(_comments.value)
+  }
+
+  return {
+    comments,
+    documentRevision,
+    add,
+    updateText,
+    toggleResolved,
+    remove,
+    replaceAll,
+    snapshot,
+    flush,
+  }
 })
