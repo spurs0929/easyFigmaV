@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { cloneElementStoreSnapshot } from '@/types/document'
 import {
   type CanvasElement,
   type ElementStore,
@@ -17,12 +18,14 @@ import {
 export const useElementStore = defineStore('element', () => {
   // ── State ──────────────────────────────────────────────────────────────────
 
-  const _store      = ref<ElementStore>({ byId: {}, rootIds: [] })
+  const _store = ref<ElementStore>({ byId: {}, rootIds: [] })
   const _selectedIds = ref<ReadonlySet<string>>(new Set())
+  // documentStore 監聽此計數器以觸發自動存檔；每次 store 結構改變時遞增。
+  const _documentRevision = ref(0)
 
   // History 不需響應式；直接用普通陣列，避免 Pinia 追蹤大量快照
-  let _history:      ElementStore[] = [{ byId: {}, rootIds: [] }]
-  let _historyIndex: number         = 0
+  let _history: ElementStore[] = [{ byId: {}, rootIds: [] }]
+  let _historyIndex: number = 0
 
   // ── Public Computed ────────────────────────────────────────────────────────
 
@@ -32,7 +35,7 @@ export const useElementStore = defineStore('element', () => {
   /** 有序 root 元素列表（index 0 = bottommost）。 */
   const rootElements = computed<CanvasElement[]>(() => {
     const { byId, rootIds } = _store.value
-    return rootIds.map(id => byId[id]).filter((el): el is CanvasElement => !!el)
+    return rootIds.map((id) => byId[id]).filter((el): el is CanvasElement => !!el)
   })
 
   /** 當前選取的 id 集合（唯讀）。 */
@@ -40,10 +43,15 @@ export const useElementStore = defineStore('element', () => {
 
   /** 當前選取的元素物件列表。 */
   const selectedElements = computed<CanvasElement[]>(() => {
-    const ids    = _selectedIds.value
+    const ids = _selectedIds.value
     const { byId } = _store.value
-    return [...ids].map(id => byId[id]).filter((el): el is CanvasElement => !!el)
+    return [...ids].map((id) => byId[id]).filter((el): el is CanvasElement => !!el)
   })
+  const documentRevision = computed(() => _documentRevision.value)
+
+  function _touchDocument(): void {
+    _documentRevision.value++
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -58,7 +66,7 @@ export const useElementStore = defineStore('element', () => {
     if (!parentId) return rootElements.value
     const parent = byId[parentId]
     if (!parent) return []
-    return parent.childIds.map(id => byId[id]).filter((el): el is CanvasElement => !!el)
+    return parent.childIds.map((id) => byId[id]).filter((el): el is CanvasElement => !!el)
   }
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
@@ -76,12 +84,13 @@ export const useElementStore = defineStore('element', () => {
     }
 
     _store.value = {
-      byId:    newById,
+      byId: newById,
       rootIds: el.parentId ? s.rootIds : [...s.rootIds, el.id],
     }
 
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
+    _touchDocument()
   }
 
   /**
@@ -89,10 +98,11 @@ export const useElementStore = defineStore('element', () => {
    * 拖曳過程中高頻呼叫，故不推 snapshot（由 mouseup 的操作方呼叫 commitUpdate）。
    */
   function update(id: string, patch: Partial<CanvasElement>): void {
-    const s  = _store.value
+    const s = _store.value
     const el = s.byId[id]
     if (!el) return
     _store.value = { ...s, byId: { ...s.byId, [id]: { ...el, ...patch } } }
+    _touchDocument()
   }
 
   /**
@@ -110,7 +120,7 @@ export const useElementStore = defineStore('element', () => {
    * 同時從 selectedIds 移除已刪除的 id。
    */
   function remove(id: string): void {
-    const s  = _store.value
+    const s = _store.value
     const el = s.byId[id]
     if (!el) return
 
@@ -130,11 +140,11 @@ export const useElementStore = defineStore('element', () => {
       if (parent) {
         newById[parent.id] = {
           ...parent,
-          childIds: parent.childIds.filter(cid => cid !== id),
+          childIds: parent.childIds.filter((cid) => cid !== id),
         }
       }
     } else {
-      newRootIds = s.rootIds.filter(rid => rid !== id)
+      newRootIds = s.rootIds.filter((rid) => rid !== id)
     }
 
     _store.value = { byId: newById, rootIds: newRootIds }
@@ -147,6 +157,7 @@ export const useElementStore = defineStore('element', () => {
 
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
+    _touchDocument()
   }
 
   /** 以完整元素陣列取代 store（用於載入專案）。 */
@@ -160,12 +171,13 @@ export const useElementStore = defineStore('element', () => {
     _store.value = { byId, rootIds }
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
+    _touchDocument()
   }
 
   /** 批次新增多個元素（單次 snapshot，效能優於多次 add）。 */
   function addAll(elements: CanvasElement[]): void {
-    const s      = _store.value
-    const byId   = { ...s.byId }
+    const s = _store.value
+    const byId = { ...s.byId }
     const rootIds = [...s.rootIds]
     for (const el of elements) {
       byId[el.id] = el
@@ -174,6 +186,7 @@ export const useElementStore = defineStore('element', () => {
     _store.value = { byId, rootIds }
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
+    _touchDocument()
   }
 
   // ── Group 邊界同步 ─────────────────────────────────────────────────────────
@@ -183,7 +196,7 @@ export const useElementStore = defineStore('element', () => {
    * 操作方（如拖曳結束、resizing 完成）負責呼叫此 action。
    */
   function syncGroupBounds(groupId: string): void {
-    const s     = _store.value
+    const s = _store.value
     const group = s.byId[groupId]
     if (!group || group.kind !== ElementKind.Group) return
 
@@ -192,6 +205,7 @@ export const useElementStore = defineStore('element', () => {
       ...s,
       byId: { ...s.byId, [groupId]: { ...group, ...bounds } },
     }
+    _touchDocument()
   }
 
   // ── Group / Ungroup ────────────────────────────────────────────────────────
@@ -207,17 +221,20 @@ export const useElementStore = defineStore('element', () => {
 
     // 只處理 root-level 元素
     const elements = ids
-      .map(id => s.byId[id])
+      .map((id) => s.byId[id])
       .filter((el): el is CanvasElement => !!el && !el.parentId)
     if (elements.length < 2) return ''
 
-    const groupId  = newElementId()
-    const idSet    = new Set(ids)
+    const groupId = newElementId()
+    const idSet = new Set(ids)
     // 保留原始 z-order（rootIds 中的順序）
-    const orderedIds = s.rootIds.filter(id => idSet.has(id))
+    const orderedIds = s.rootIds.filter((id) => idSet.has(id))
 
     // 使用 rotatedCorners 計算正確的 AABB（含 rotation）
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity
     for (const el of elements) {
       for (const [px, py] of rotatedCorners(el)) {
         if (px < minX) minX = px
@@ -236,31 +253,34 @@ export const useElementStore = defineStore('element', () => {
     }
 
     newById[groupId] = {
-      id:          groupId,
-      kind:        ElementKind.Group,
-      name:        GROUP_DEFAULT_NAME,
-      x:           minX,
-      y:           minY,
-      width:       maxX - minX,
-      height:      maxY - minY,
-      rotation:    0,
-      scaleX:      1,
-      scaleY:      1,
-      opacity:     1,
-      fill:        { type: 'solid', color: '' },
-      stroke:      ELEMENT_DEFAULT_STROKE,
+      id: groupId,
+      kind: ElementKind.Group,
+      name: GROUP_DEFAULT_NAME,
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      opacity: 1,
+      fill: { type: 'solid', color: '' },
+      stroke: ELEMENT_DEFAULT_STROKE,
       strokeWidth: 0,
-      visible:     true,
-      locked:      false,
-      parentId:    undefined,
-      childIds:    orderedIds,
+      visible: true,
+      locked: false,
+      parentId: undefined,
+      childIds: orderedIds,
     }
 
     // rootIds：以 Group 取代被打包的元素（維持 z-order 插入位置）
     let inserted = false
     const newRootIds = s.rootIds.reduce<string[]>((acc, id) => {
       if (idSet.has(id)) {
-        if (!inserted) { acc.push(groupId); inserted = true }
+        if (!inserted) {
+          acc.push(groupId)
+          inserted = true
+        }
         // 被打包的元素已移入 Group，不再出現於 rootIds
       } else {
         acc.push(id)
@@ -271,6 +291,7 @@ export const useElementStore = defineStore('element', () => {
     _store.value = { byId: newById, rootIds: newRootIds }
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
+    _touchDocument()
 
     return groupId
   }
@@ -282,7 +303,7 @@ export const useElementStore = defineStore('element', () => {
    * 回傳被還原的子元素 id 列表，供呼叫方重新選取。
    */
   function ungroup(id: string): string[] {
-    const s     = _store.value
+    const s = _store.value
     const group = s.byId[id]
     if (!group || group.kind !== ElementKind.Group) return []
 
@@ -320,35 +341,50 @@ export const useElementStore = defineStore('element', () => {
 
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
+    _touchDocument()
 
     return childIds
   }
 
   // ── Z-Order ────────────────────────────────────────────────────────────────
 
-  function bringToFront(id: string): void { _reorder(id, ZOrderDirection.Front) }
-  function sendToBack(id: string):   void { _reorder(id, ZOrderDirection.Back)  }
-  function moveUp(id: string):       void { _reorder(id, ZOrderDirection.Up)    }
-  function moveDown(id: string):     void { _reorder(id, ZOrderDirection.Down)  }
+  function bringToFront(id: string): void {
+    _reorder(id, ZOrderDirection.Front)
+  }
+  function sendToBack(id: string): void {
+    _reorder(id, ZOrderDirection.Back)
+  }
+  function moveUp(id: string): void {
+    _reorder(id, ZOrderDirection.Up)
+  }
+  function moveDown(id: string): void {
+    _reorder(id, ZOrderDirection.Down)
+  }
 
   function _reorder(id: string, dir: ZOrderDirection): void {
-    const s  = _store.value
+    const s = _store.value
     const el = s.byId[id]
     if (!el) return
 
     const isRoot = !el.parentId
-    const list   = isRoot
-      ? [...s.rootIds]
-      : [...(s.byId[el.parentId!]?.childIds ?? [])]
+    const list = isRoot ? [...s.rootIds] : [...(s.byId[el.parentId!]?.childIds ?? [])]
     const idx = list.indexOf(id)
     if (idx === -1) return
 
     list.splice(idx, 1)
     switch (dir) {
-      case ZOrderDirection.Front: list.push(id);                                      break
-      case ZOrderDirection.Back:  list.unshift(id);                                   break
-      case ZOrderDirection.Up:    list.splice(Math.min(idx + 1, list.length), 0, id); break
-      case ZOrderDirection.Down:  list.splice(Math.max(idx - 1, 0),           0, id); break
+      case ZOrderDirection.Front:
+        list.push(id)
+        break
+      case ZOrderDirection.Back:
+        list.unshift(id)
+        break
+      case ZOrderDirection.Up:
+        list.splice(Math.min(idx + 1, list.length), 0, id)
+        break
+      case ZOrderDirection.Down:
+        list.splice(Math.max(idx - 1, 0), 0, id)
+        break
     }
 
     if (isRoot) {
@@ -360,6 +396,7 @@ export const useElementStore = defineStore('element', () => {
         byId: { ...s.byId, [parent.id]: { ...parent, childIds: list } },
       }
     }
+    _touchDocument()
   }
 
   // ── Undo / Redo ────────────────────────────────────────────────────────────
@@ -380,6 +417,7 @@ export const useElementStore = defineStore('element', () => {
       _historyIndex--
       _store.value = _history[_historyIndex]
       clearSelection()
+      _touchDocument()
     }
   }
 
@@ -388,7 +426,27 @@ export const useElementStore = defineStore('element', () => {
       _historyIndex++
       _store.value = _history[_historyIndex]
       clearSelection()
+      _touchDocument()
     }
+  }
+
+  /** 取得當前 store 的深拷貝，供 documentStore 建立快照使用。 */
+  function snapshot(): ElementStore {
+    return cloneElementStoreSnapshot(_store.value)
+  }
+
+  /**
+   * 以外部快照完整取代 store 並重設 history（載入存檔 / 匯入 JSON 時使用）。
+   * 清空選取集合，避免 selectedIds 指向已不存在的元素 id。
+   */
+  function loadSnapshot(snapshot: ElementStore): void {
+    const nextStore = cloneElementStoreSnapshot(snapshot)
+    _store.value = nextStore
+    _selectedIds.value = new Set()
+    _history = [nextStore]
+    _historyIndex = 0
+    assertStoreIntegrity(_store.value)
+    _touchDocument()
   }
 
   // ── Selection ──────────────────────────────────────────────────────────────
@@ -423,9 +481,12 @@ export const useElementStore = defineStore('element', () => {
     rootElements,
     selectedIds,
     selectedElements,
+    documentRevision,
     // Lookup
     get,
     childrenOf,
+    snapshot,
+    loadSnapshot,
     // CRUD
     add,
     update,
