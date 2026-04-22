@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import Popover from 'primevue/popover'
 import { useToolStore } from '@/store/tool'
+import DocumentActions from './DocumentActions.vue'
 import {
   TOOL_GROUPS,
   ToolGroup,
@@ -232,6 +233,8 @@ onUnmounted(() => {
         </button>
       </div>
     </Popover>
+
+    <DocumentActions />
   </aside>
 </template>
 

@@ -20,6 +20,15 @@ $color-active-bg: #2a2a3e;
   user-select: none;
 }
 
+.toolbar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 4px;
+  gap: 4px;
+}
+
 // ── 群組容器 ─────────────────────────────────────────────────────────────────
 .tool-group {
   position: relative;
@@ -181,6 +190,32 @@ $color-active-bg: #2a2a3e;
   &::after {
     display: none; // 移除預設箭頭
   }
+}
+
+.document-status {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  margin-top: 4px;
+  background: $color-text-muted;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+  &.is-loading,
+  &.is-saving {
+    background: #eab308;
+  }
+
+  &.is-saved {
+    background: #22c55e;
+  }
+
+  &.is-error {
+    background: #ef4444;
+  }
+}
+
+.document-file-input {
+  display: none;
 }
 
 // ── PrimeVue Tooltip 深色主題覆寫 ────────────────────────────────────────────
