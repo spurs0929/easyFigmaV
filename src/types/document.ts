@@ -25,6 +25,18 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+function isOpacity(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0 && value <= 1
+}
+
+function isNonNegative(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0
+}
+
+function isPositive(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
@@ -52,7 +64,7 @@ function isSolidPaint(value: unknown): boolean {
   return (
     value.type === 'solid' &&
     typeof value.color === 'string' &&
-    (value.opacity === undefined || isFiniteNumber(value.opacity))
+    (value.opacity === undefined || isOpacity(value.opacity))
   )
 }
 
@@ -162,30 +174,30 @@ export function isCanvasElementSnapshot(value: unknown): value is CanvasElement 
     typeof value.name === 'string' &&
     isFiniteNumber(value.x) &&
     isFiniteNumber(value.y) &&
-    isFiniteNumber(value.width) &&
-    isFiniteNumber(value.height) &&
+    isNonNegative(value.width) &&
+    isNonNegative(value.height) &&
     isFiniteNumber(value.rotation) &&
     isFiniteNumber(value.scaleX) &&
     isFiniteNumber(value.scaleY) &&
-    isFiniteNumber(value.opacity) &&
+    isOpacity(value.opacity) &&
     isSolidPaint(value.fill) &&
     isSolidPaint(value.stroke) &&
-    isFiniteNumber(value.strokeWidth) &&
+    isNonNegative(value.strokeWidth) &&
     typeof value.visible === 'boolean' &&
     typeof value.locked === 'boolean' &&
     (value.parentId === undefined || typeof value.parentId === 'string') &&
     isStringArray(value.childIds) &&
     (value.text === undefined || typeof value.text === 'string') &&
-    (value.fontSize === undefined || isFiniteNumber(value.fontSize)) &&
+    (value.fontSize === undefined || isPositive(value.fontSize)) &&
     (value.fontFamily === undefined || typeof value.fontFamily === 'string') &&
     (value.fontWeight === undefined || FONT_WEIGHTS.has(value.fontWeight as number)) &&
-    (value.lineHeight === undefined || isFiniteNumber(value.lineHeight)) &&
+    (value.lineHeight === undefined || isPositive(value.lineHeight)) &&
     (value.letterSpacing === undefined || isFiniteNumber(value.letterSpacing)) &&
     (value.textAlign === undefined || TEXT_ALIGNMENTS.has(value.textAlign as string)) &&
     (value.points === undefined || isFiniteNumberArray(value.points)) &&
     (value.vectorPoints === undefined || (Array.isArray(value.vectorPoints) && value.vectorPoints.every(isVectorPoint))) &&
     (value.closed === undefined || typeof value.closed === 'boolean') &&
-    (value.cornerRadius === undefined || isFiniteNumber(value.cornerRadius)) &&
+    (value.cornerRadius === undefined || isNonNegative(value.cornerRadius)) &&
     (value.componentId === undefined || typeof value.componentId === 'string')
   )
 }
