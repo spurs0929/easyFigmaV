@@ -204,7 +204,9 @@ export function isCanvasElementSnapshot(value: unknown): value is CanvasElement 
 
 /**
  * 驗證整個 ElementStore 的結構完整性：
- * 每個元素的 parentId / childIds 必須指向 byId 內存在的 id，避免孤兒節點。
+ * - 每個元素的 parentId / childIds 必須指向 byId 內存在的 id，避免孤兒節點。
+ * - 所有 parentId === undefined 的元素必須出現在 rootIds 中（反向一致性）。
+ * - rootIds 不允許重複。
  */
 export function isElementStoreSnapshot(value: unknown): value is ElementStore {
   if (!isRecord(value) || !isRecord(value.byId) || !isStringArray(value.rootIds)) return false
@@ -219,9 +221,22 @@ export function isElementStoreSnapshot(value: unknown): value is ElementStore {
     if (!element.childIds.every((childId) => allIds.has(childId))) return false
   }
 
-  for (const rootId of value.rootIds) {
-    const root = value.byId[rootId]
-    if (!root || !isCanvasElementSnapshot(root) || root.parentId !== undefined) return false
+  const rootIdSet = new Set(value.rootIds)
+
+  // rootIds 不允許重複
+  if (rootIdSet.size !== value.rootIds.length) return false
+
+  for (const rootId of rootIdSet) {
+    // rootIds 中的每個 id 必須存在且 parentId === undefined（已通過上方 isCanvasElementSnapshot）
+    const root = value.byId[rootId] as CanvasElement | undefined
+    if (!root || root.parentId !== undefined) return false
+  }
+
+  // parentId === undefined 的元素必須全數出現在 rootIds，防止孤兒根節點
+  for (const [, element] of byIdEntries) {
+    if ((element as CanvasElement).parentId === undefined && !rootIdSet.has((element as CanvasElement).id)) {
+      return false
+    }
   }
 
   return true
