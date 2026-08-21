@@ -10,6 +10,8 @@
   },
   "editor.formatOnSave": true,
   "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "typescript.tsdk": "node_modules/typescript/lib",
-  "vue.server.hybridMode": true
+  "js/ts.tsdk.path": "node_modules/typescript/lib",
+  "vue.server.hybridMode": true,
+  "python.defaultInterpreterPath": "${workspaceFolder}/server/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": ["./server"]
 }
