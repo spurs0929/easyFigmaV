@@ -1,6 +1,9 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-sqlalchemy==2.0.36
+# [asyncio] extra 會明確帶入 greenlet；SQLAlchemy 的 async 需要它，
+# 但它在 base package 是條件式依賴，看平台與架構，不保證裝得到
+sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
+pydantic>=2.9,<3
 pydantic-settings==2.6.0
 alembic==1.14.0
