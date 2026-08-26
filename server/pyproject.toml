@@ -1,6 +1,8 @@
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# 排除 Alembic 自動產生的 migration 檔案，不進行 lint 檢查
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
