@@ -29,7 +29,11 @@ def _build_ssl(mode: str) -> bool | ssl.SSLContext:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
     database_url: str
     # 覆寫 DATABASE_URL 裡的 sslmode。留空時：本機 host → disable，其餘 → verify-full
