@@ -1,0 +1,16 @@
+# 沒有這個檔案，COPY . . 會把本機 .env 烤進 image layer，
+# 而 layer 是 immutable 的，事後刪不掉
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.git/
+.gitignore
+*.md
