@@ -1,29 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+// 全域樣式留在這裡而不是搬進 EditorView：登入、註冊等頁面同樣需要它。
 import '@/styles/global.scss'
-import Toolbar from '@/components/toolbar/Toolbar.vue'
-import LayerPanel from '@/components/LayerPanel/LayerPanel.vue'
-import CanvasArea from '@/components/canvas/canvas.vue'
-import PropertiesPanel from '@/components/properties/PropertiesPanel.vue'
-import { useDocumentStore } from '@/store/document'
-
-const documentStore = useDocumentStore()
-
-// App 掛載時啟動 IndexedDB 自動存檔並嘗試載入上次存檔；卸載時釋放 watcher 與事件監聽。
-onMounted(() => {
-  void documentStore.startPersistence()
-})
-
-onUnmounted(() => {
-  documentStore.stopPersistence()
-})
 </script>
 
 <template>
-  <div class="app-layout" @contextmenu.prevent>
-    <Toolbar />
-    <LayerPanel />
-    <CanvasArea />
-    <PropertiesPanel />
-  </div>
+  <!--
+    刻意不包任何 wrapper 元素。global.scss 的 .app-layout 大概率是以
+    #app 為定位基準做滿版佈局，多一層 div 會改變高度計算。
+  -->
+  <RouterView />
 </template>
