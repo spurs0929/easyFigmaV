@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 REFRESH_COOKIE_NAME = "refresh_token"
-# 收斂到 /auth：登入、refresh、logout 都在這底下，其他端點不會收到這個 cookie。
-REFRESH_COOKIE_PATH = "/auth"
+# 收斂到 /api/auth：登入、refresh、logout 都在這底下，其他端點不會收到這個 cookie。
+REFRESH_COOKIE_PATH = "/api/auth"
 
 # 對外一律用同一句。區分「查無此帳號」與「密碼錯誤」等於送給任何人一個
 # 帳號存在性的查詢介面（user enumeration）。實際原因寫進 log。
@@ -182,7 +182,10 @@ async def login(
     dependencies=[Depends(require_csrf_header), Depends(rate_limit("refresh"))],
 )
 async def refresh(request: Request, response: Response, db: DbSession) -> TokenResponse:
-    """輪替 refresh token。"""
+    """輪替 refresh token。
+
+    整段的難點不在流程而在併發與重放的分辨，見下方各處註解。
+    """
     raw = request.cookies.get(REFRESH_COOKIE_NAME)
     if not raw:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "沒有 refresh token")

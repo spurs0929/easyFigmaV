@@ -25,4 +25,9 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
-app.include_router(auth_router)
+# 業務 API 統一掛在 /api 底下：
+#   1. 本機開發用 Vite proxy 把 /api 轉給後端，前後端同源，
+#      cookie 就不是跨站，SameSite=Lax 才送得出去
+#   2. 避免前端路由（/projects）與後端 API（/projects）撞名
+# /health 維持在根路徑，Render 的健康檢查指向那裡。
+app.include_router(auth_router, prefix="/api")
