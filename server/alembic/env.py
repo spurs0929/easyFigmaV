@@ -1,17 +1,17 @@
 import asyncio
 from logging.config import fileConfig
 
-from app.db.base import Base
-
-# app.models 這行必須留著：import 之後 model 才會註冊到 Base.metadata，
-# autogenerate 才看得到表。少了它 autogenerate 會產出「刪掉所有表」的 migration。
-from app.models import *  # noqa: F401,F403
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 from app.core.config import settings
+from app.db.base import Base
+
+# app.models 這行必須留著：import 之後 model 才會註冊到 Base.metadata，
+# autogenerate 才看得到表。少了它 autogenerate 會產出「刪掉所有表」的 migration。
+from app.models import *  # noqa: F401,F403
 
 config = context.config
 
