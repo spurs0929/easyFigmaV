@@ -1,9 +1,21 @@
+# NOTE: keep this file ASCII-only.
+# pip decodes requirements files with the system locale encoding (cp950 on
+# zh-TW Windows), not UTF-8, so non-ASCII comments break `pip install -r`.
+
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-# [asyncio] extra 會明確帶入 greenlet；SQLAlchemy 的 async 需要它，
-# 但它在 base package 是條件式依賴，看平台與架構，不保證裝得到
+
+# The [asyncio] extra pulls in greenlet explicitly. SQLAlchemy's async support
+# needs it, but in the base package it is a conditional dependency that varies
+# by platform and architecture, so it is not guaranteed to be installed.
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
-pydantic>=2.9,<3
+
+# [email] extra provides EmailStr validation.
+pydantic[email]>=2.9,<3
 pydantic-settings==2.6.0
 alembic==1.14.0
+
+# Auth
+argon2-cffi==23.1.0
+pyjwt==2.10.1
