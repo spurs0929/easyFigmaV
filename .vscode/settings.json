@@ -14,5 +14,6 @@
   "vue.server.hybridMode": true,
   "python.defaultInterpreterPath": "${workspaceFolder}/server/.venv/Scripts/python.exe",
   "python.analysis.extraPaths": ["./server"],
-  "python.autoComplete.extraPaths": ["./server"]
+  "python.autoComplete.extraPaths": ["./server"],
+  "python.terminal.activateEnvironment": false
 }
