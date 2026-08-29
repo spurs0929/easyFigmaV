@@ -14,10 +14,12 @@ dist-ssr
 coverage
 *.local
 
-# 環境變數（含敏感資訊，禁止提交）
+# 環境變數預設不提交，僅允許公開且版本化的設定檔
 .env
 .env.*
 !.env.example
+!.env.development
+!.env.production
 
 # Editor directories and files
 .vscode/*

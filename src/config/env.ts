@@ -1,20 +1,29 @@
 /**
- * API 位址。
+ * 環境變數的唯一入口。
  *
- * 開發時是空字串，代表用相對路徑 /api/...，由 Vite 的 proxy 轉給本機後端。
- * 這樣前後端同源，refresh cookie 屬於第一方，SameSite=Lax 才送得出去。
- *
- * 正式環境是完整網址，此時 cookie 為跨站，後端會改發 SameSite=None; Secure。
- *
- * 這個值不是機密（就是一個公開的 API 網址），所以直接寫在原始碼裡而不用
- * .env 檔——專案的 .gitignore 會忽略所有 .env*，多開例外反而容易出錯。
- * 需要指向別的後端時，用 VITE_API_BASE_URL 覆寫即可。
+ * 集中讀取 import.meta.env，統一管理型別與啟動時驗證，
+ * 並避免環境變數散落於各模組。
  */
-const FALLBACK = import.meta.env.DEV ? '' : 'https://easyfigma-api.onrender.com'
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? FALLBACK
+/**
+ * 後端 API 位址。
+ *
+ * 開發環境使用空字串與相對路徑，交由 Vite proxy 轉送至本機後端。
+ * 正式環境則指定完整的 API origin。
+ *
+ * VITE_ 前綴的變數會被編譯進前端 bundle，因此只能存放可公開資訊，
+ * 不得包含密碼、API secret 或其他機密資料。
+ */
+export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? ''
 
-/** 打後端 API 用。傳入 '/auth/login' 會得到正確的完整路徑。 */
+export const IS_DEV: boolean = import.meta.env.DEV
+
+/** 將 API 相對路徑轉換為完整請求位址。 */
 export function apiUrl(path: string): string {
   return `${API_BASE_URL}/api${path}`
+}
+
+// 正式環境必須明確指定 API 位址，避免錯誤地使用相對路徑。
+if (!IS_DEV && !API_BASE_URL) {
+  throw new Error('缺少 VITE_API_BASE_URL。正式環境必須指定後端位址，請檢查 .env.production。')
 }
