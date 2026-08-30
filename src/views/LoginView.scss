@@ -1,0 +1,23 @@
+// 表單樣式與 RegisterView 有部分重複。刻意不抽成共用檔：scoped 樣式無論如何
+// 都會為每個元件各自產出一份，抽出來只增加一層間接、不會減少輸出。
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  label {
+    font-size: 13px;
+    color: #a8a8a8;
+  }
+}
+
+.auth-footer-divider {
+  margin: 0 8px;
+}

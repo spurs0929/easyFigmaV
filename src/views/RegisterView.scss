@@ -1,0 +1,25 @@
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  label {
+    font-size: 13px;
+    color: #a8a8a8;
+  }
+}
+
+.auth-optional {
+  color: #6a6a6a;
+}
+
+.auth-hint {
+  font-size: 12px;
+  color: #6a6a6a;
+}
