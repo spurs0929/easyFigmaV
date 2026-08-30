@@ -1,0 +1,71 @@
+// .divider 與 .tool-btn 沿用 Toolbar.scss 的定義（該檔案未加 scoped，屬全域）。
+// 這裡只補帳號相關的樣式。
+
+.account-menu {
+  display: contents;
+}
+
+.account-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.account-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #3d5a99;
+  color: #e8e8e8;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.account-panel {
+  min-width: 180px;
+  padding: 4px;
+}
+
+.account-name {
+  color: #e8e8e8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-email {
+  margin-top: 2px;
+  color: #8a8a8a;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.account-error {
+  margin-top: 8px;
+  color: #e5686d;
+  font-size: 12px;
+}
+
+.account-action {
+  width: 100%;
+  margin-top: 12px;
+  padding: 6px 8px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: transparent;
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: #2a2a2a;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+}
