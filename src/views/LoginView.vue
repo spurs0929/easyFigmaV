@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -14,6 +14,8 @@ const route = useRoute()
 
 const email = ref('')
 const password = ref('')
+
+onMounted(() => auth.clearError())
 
 async function submit(): Promise<void> {
   if (!(await auth.login(email.value.trim(), password.value))) return

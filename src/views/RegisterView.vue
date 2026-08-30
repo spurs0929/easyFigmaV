@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -18,6 +18,8 @@ const displayName = ref('')
 // 與後端的 RegisterRequest 一致：8 到 128 字元。
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
+
+onMounted(() => auth.clearError())
 
 const passwordHint = computed(() => {
   if (!password.value) return `至少 ${MIN_PASSWORD_LENGTH} 個字元`
