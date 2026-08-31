@@ -55,13 +55,25 @@ export function onSessionChange(listener: SessionListener): () => void {
   return () => listeners.delete(listener)
 }
 
+/**
+ * 讓所有飛行中的 refresh 失效。
+ *
+ * publish() 也會遞增世代，但那是在狀態真的改變之後。使用者按下登出的當下就
+ * 已經表達了意圖，這段期間回來的 refresh 不該把 session 復活——即使最終狀態
+ * 仍然正確，UI 也會閃一下登入狀態。
+ */
+function invalidatePendingRefresh(): void {
+  sessionGeneration += 1
+}
+
 function publish(session: Session | null): void {
+  // 這裡也遞增是安全網：日後新增任何改變 session 的路徑，都會自動讓
+  // 飛行中的 refresh 失效，不必記得手動呼叫 invalidatePendingRefresh()。
   sessionGeneration += 1
   accessToken = session?.access_token ?? null
 
   for (const listener of listeners) {
-    // 隔離個別 listener 的例外，否則單一訂閱者出錯會讓其餘訂閱者收不到通知，
-    // 也會讓 refreshSession() 在後端其實成功的情況下 reject。
+    // Listener 失敗不應影響其他訂閱者與 session flow。
     try {
       listener(session)
     } catch (error) {
@@ -140,12 +152,17 @@ async function attemptRefresh(
   attempt = 0,
   generation = sessionGeneration,
 ): Promise<Session | null> {
+  if (generation !== sessionGeneration) return null
+
   const response = await rawFetch('/auth/refresh', { method: 'POST' })
 
   // 409 表示 refresh token 已被其他並行請求輪替，常見於多分頁同時 refresh。
   // 後端不視為重放攻擊，因此允許短暫延遲後重試。
   if (response.status === 409 && attempt < REFRESH_MAX_RETRIES) {
     await sleep(REFRESH_RETRY_DELAY_MS * (attempt + 1))
+    // 睡眠期間可能發生登入或登出，此時不該再送一次 refresh——那會在後端
+    // 真的輪替掉一組 token。
+    if (generation !== sessionGeneration) return null
     return attemptRefresh(attempt + 1, generation)
   }
 
@@ -233,13 +250,16 @@ export async function login(input: { email: string; password: string }): Promise
 /**
  * 登出這個裝置。
  *
- * 產品決策：無論伺服器端是否成功，都清除本機 session——使用者按下登出後，
- * 畫面不該還停在已登入狀態。
+ * 產品決策：不論伺服器端成功與否，請求結束後一律回到未登入狀態。
+ * 注意這是「請求結束後」而非「按下當下」——等待期間 UI 仍是登入狀態，
+ * 呼叫端應該顯示 loading。
  *
  * 代價：若失敗原因是網路或伺服器問題而非 cookie 失效，refresh cookie 仍然
  * 有效，重新載入頁面會恢復登入。呼叫端可以捕捉例外並提示使用者重試。
  */
 export async function logout(): Promise<void> {
+  invalidatePendingRefresh()
+
   try {
     await apiFetch<void>('/auth/logout', { method: 'POST' })
   } finally {
@@ -249,6 +269,8 @@ export async function logout(): Promise<void> {
 
 /** 登出所有裝置。與 logout 相同的取捨。 */
 export async function logoutAll(): Promise<void> {
+  invalidatePendingRefresh()
+
   try {
     await apiFetch<void>('/auth/logout-all', { method: 'POST' })
   } finally {
