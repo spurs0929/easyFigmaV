@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -11,6 +11,9 @@ import { useAuthStore } from '@/store/auth'
 const auth = useAuthStore()
 const router = useRouter()
 
+// 錯誤訊息存在 store 裡而 store 是單例，離開頁面不會自動清除。
+onMounted(() => auth.clearError())
+
 const email = ref('')
 const password = ref('')
 const displayName = ref('')
@@ -18,8 +21,6 @@ const displayName = ref('')
 // 與後端的 RegisterRequest 一致：8 到 128 字元。
 const MIN_PASSWORD_LENGTH = 8
 const MAX_PASSWORD_LENGTH = 128
-
-onMounted(() => auth.clearError())
 
 const passwordHint = computed(() => {
   if (!password.value) return `至少 ${MIN_PASSWORD_LENGTH} 個字元`

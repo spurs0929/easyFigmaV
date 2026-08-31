@@ -27,7 +27,9 @@ function describeError(error: unknown): string {
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const error = ref<string | null>(null)
-  const pending = ref(false)
+  // 用計數而非布林：兩個動作並行時，先完成的那個不會提前解除 loading。
+  const pendingCount = ref(0)
+  const pending = computed(() => pendingCount.value > 0)
   /** bootstrap 是否已完成。router guard 靠它避免在恢復 session 前就判斷。 */
   const ready = ref(false)
 
@@ -41,6 +43,10 @@ export const useAuthStore = defineStore('auth', () => {
 
   /** 啟動時恢復 session。可重複呼叫，實際請求只會發一次。 */
   async function bootstrap(): Promise<void> {
+    // 只在啟動時執行一次。ensureBootstrapped() 會永久快取第一次的結果，
+    // 完成後再呼叫會拿到過期的 session，把登入後的狀態蓋掉。
+    if (ready.value) return
+
     try {
       const session = await ensureBootstrapped()
       user.value = session?.user ?? null
@@ -53,7 +59,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function run<T>(action: () => Promise<T>): Promise<T | null> {
-    pending.value = true
+    pendingCount.value += 1
     error.value = null
     try {
       return await action()
@@ -61,7 +67,7 @@ export const useAuthStore = defineStore('auth', () => {
       error.value = describeError(caught)
       return null
     } finally {
-      pending.value = false
+      pendingCount.value -= 1
     }
   }
 
@@ -77,7 +83,11 @@ export const useAuthStore = defineStore('auth', () => {
     displayNameInput?: string,
   ): Promise<boolean> {
     const session = await run(() =>
-      apiRegister({ email, password, display_name: displayNameInput || undefined }),
+      apiRegister({
+        email,
+        password,
+        display_name: displayNameInput?.trim() || undefined,
+      }),
     )
     if (session) user.value = session.user
     return session !== null

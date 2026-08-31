@@ -42,6 +42,10 @@ let refreshInFlight: Promise<Session | null> | null = null
 // App 啟動期間只執行一次 silent refresh。
 let bootstrapPromise: Promise<Session | null> | null = null
 
+// 每次 session 狀態改變就遞增。飛行中的 refresh 會記下開始時的世代，
+// 回來時若已不符就丟棄結果——否則登出後才回來的 refresh 會把 session 復活。
+let sessionGeneration = 0
+
 type SessionListener = (session: Session | null) => void
 const listeners = new Set<SessionListener>()
 
@@ -52,10 +56,12 @@ export function onSessionChange(listener: SessionListener): () => void {
 }
 
 function publish(session: Session | null): void {
+  sessionGeneration += 1
   accessToken = session?.access_token ?? null
 
   for (const listener of listeners) {
-    // Listener 失敗不應影響其他訂閱者與 session flow。
+    // 隔離個別 listener 的例外，否則單一訂閱者出錯會讓其餘訂閱者收不到通知，
+    // 也會讓 refreshSession() 在後端其實成功的情況下 reject。
     try {
       listener(session)
     } catch (error) {
@@ -76,6 +82,8 @@ interface RequestOptions {
   signal?: AbortSignal
   /** 內部使用：避免 401 重試無限遞迴。 */
   _retried?: boolean
+  /** 內部使用：這個請求的 401 是預期結果，不應觸發 silent refresh。 */
+  _skipRefresh?: boolean
 }
 
 function buildSignal(caller?: AbortSignal): AbortSignal {
@@ -128,20 +136,30 @@ async function toError(response: Response): Promise<ApiError> {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function attemptRefresh(attempt = 0): Promise<Session | null> {
+async function attemptRefresh(
+  attempt = 0,
+  generation = sessionGeneration,
+): Promise<Session | null> {
   const response = await rawFetch('/auth/refresh', { method: 'POST' })
 
   // 409 表示 refresh token 已被其他並行請求輪替，常見於多分頁同時 refresh。
   // 後端不視為重放攻擊，因此允許短暫延遲後重試。
   if (response.status === 409 && attempt < REFRESH_MAX_RETRIES) {
     await sleep(REFRESH_RETRY_DELAY_MS * (attempt + 1))
-    return attemptRefresh(attempt + 1)
+    return attemptRefresh(attempt + 1, generation)
   }
 
+  // 這個請求飛行期間發生過登入或登出，結果已經過期，直接丟棄。
+  if (generation !== sessionGeneration) return null
+
   if (!response.ok) {
-    // 未登入、已過期、或後端偵測到重放而撤銷 family，前端一律視為 session 結束。
-    publish(null)
-    return null
+    // 只有後端明確表示憑證無效時才清除 session。5xx 與 429 是暫時性故障，
+    // Render 免費方案冷啟動時尤其常見，當成登出會讓使用者莫名被踢出去。
+    if (response.status === 401 || response.status === 403) {
+      publish(null)
+      return null
+    }
+    throw await toError(response)
   }
 
   const session = (await response.json()) as Session
@@ -172,7 +190,7 @@ export function ensureBootstrapped(): Promise<Session | null> {
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await rawFetch(path, options)
 
-  if (response.status === 401 && !options._retried && !path.startsWith('/auth/')) {
+  if (response.status === 401 && !options._retried && !options._skipRefresh) {
     const session = await refreshSession()
     if (!session) throw await toError(response)
     return apiFetch<T>(path, { ...options, _retried: true })
@@ -191,13 +209,23 @@ export async function register(input: {
   password: string
   display_name?: string
 }): Promise<Session> {
-  const session = await apiFetch<Session>('/auth/register', { method: 'POST', json: input })
+  const session = await apiFetch<Session>('/auth/register', {
+    method: 'POST',
+    json: input,
+    // 註冊回 401 不可能是 access token 過期，不該觸發 refresh。
+    _skipRefresh: true,
+  })
   publish(session)
   return session
 }
 
 export async function login(input: { email: string; password: string }): Promise<Session> {
-  const session = await apiFetch<Session>('/auth/login', { method: 'POST', json: input })
+  const session = await apiFetch<Session>('/auth/login', {
+    method: 'POST',
+    json: input,
+    // 401 就是帳密錯誤，不該觸發 refresh。
+    _skipRefresh: true,
+  })
   publish(session)
   return session
 }

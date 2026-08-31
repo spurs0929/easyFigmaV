@@ -33,6 +33,13 @@ const router = createRouter({
       component: () => import('@/views/RegisterView.vue'),
       meta: { guestOnly: true },
     },
+    {
+      // Render 的 static site 把所有路徑都改寫成 index.html，沒有這條的話
+      // 未知路徑會渲染成空白畫面，只在 console 留一則警告。
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFoundView.vue'),
+    },
   ],
 })
 

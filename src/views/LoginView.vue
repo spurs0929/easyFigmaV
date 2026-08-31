@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -12,16 +12,26 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
+// 錯誤訊息存在 store 裡而 store 是單例，離開頁面不會自動清除。
+onMounted(() => auth.clearError())
+
 const email = ref('')
 const password = ref('')
 
-onMounted(() => auth.clearError())
+/**
+ * 只接受站內路徑。`//evil.example` 會被瀏覽器當成 protocol-relative URL，
+ * 只檢查開頭是不是 `/` 擋不住它。
+ */
+function safeRedirect(value: unknown): string {
+  if (typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')) {
+    return value
+  }
+  return '/'
+}
 
 async function submit(): Promise<void> {
   if (!(await auth.login(email.value.trim(), password.value))) return
-
-  const redirect = route.query.redirect
-  await router.replace(typeof redirect === 'string' ? redirect : '/')
+  await router.replace(safeRedirect(route.query.redirect))
 }
 </script>
 
