@@ -11,11 +11,42 @@ import {
   type User,
 } from '@/services/api'
 
+/** 從 FastAPI 的 422 回應裡取出第一個出錯的欄位名稱。 */
+function firstInvalidField(payload: unknown): string | null {
+  const detail = (payload as { detail?: unknown })?.detail
+  if (!Array.isArray(detail)) return null
+  const loc = (detail[0] as { loc?: unknown })?.loc
+  if (!Array.isArray(loc)) return null
+  // loc 形如 ['body', 'email']，最後一段才是欄位名
+  const field = loc[loc.length - 1]
+  return typeof field === 'string' ? field : null
+}
+
 /** 把各種失敗轉成可以直接顯示的訊息。 */
 function describeError(error: unknown): string {
   if (error instanceof ApiError) {
-    // 後端的 detail 已經是給使用者看的中文訊息，只有限流需要補充說明。
+    // 後端的 detail 多半已經是給使用者看的中文訊息，兩種例外要另外處理。
     if (error.status === 429) return '嘗試次數過多，請稍後再試'
+
+    // 5xx 代表伺服器端的問題，不是使用者輸入的問題。
+    // 開發時後端停掉會由 Vite proxy 回 500，正式環境則是 Render 回 502/503。
+    if (error.status >= 500) return '伺服器暫時無法回應，請稍後再試'
+
+    // 422 來自 pydantic，訊息是英文且偏技術性
+    // （例如 "The part after the @-sign is not valid."），要翻成使用者看得懂的。
+    if (error.status === 422) {
+      switch (firstInvalidField(error.payload)) {
+        case 'email':
+          return 'Email 格式不正確'
+        case 'password':
+          return '密碼長度需為 8 到 128 個字元'
+        case 'display_name':
+          return '顯示名稱最多 80 個字元'
+        default:
+          return '輸入內容有誤，請檢查後再試'
+      }
+    }
+
     return error.detail
   }
   if (error instanceof DOMException && error.name === 'TimeoutError') {
