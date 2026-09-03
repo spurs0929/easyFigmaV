@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # 延遲超線性惡化（實測 4 並行 = 14 倍單次耗時），必須設上限。
     password_hash_concurrency: int = 2
 
+    # 單一 document 的大小上限。autosave 送的是整包 document，沒有上限的話
+    # bug 或惡意請求可以持續把巨型 JSON 塞進 Postgres。
+    max_document_bytes: int = 2 * 1024 * 1024
+
+    # 專案列表一次最多回傳幾筆。沒有分頁，但也不能無上限。
+    max_projects_per_page: int = 100
+
     # 登入 / 註冊的速率限制（單機記憶體實作，多實例需改 Redis）
     auth_rate_limit_attempts: int = 10
     auth_rate_limit_window_seconds: int = 300

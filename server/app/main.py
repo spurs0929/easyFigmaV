@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
+from app.api.projects import router as projects_router
 from app.core.config import settings
 from app.db.session import engine
 
@@ -31,3 +32,4 @@ app.include_router(health_router)
 #   2. 避免前端路由（/projects）與後端 API（/projects）撞名
 # /health 維持在根路徑，Render 的健康檢查指向那裡。
 app.include_router(auth_router, prefix="/api")
+app.include_router(projects_router, prefix="/api")
