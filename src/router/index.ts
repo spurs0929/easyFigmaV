@@ -34,6 +34,12 @@ const router = createRouter({
       meta: { guestOnly: true },
     },
     {
+      path: '/projects',
+      name: 'projects',
+      component: () => import('@/views/ProjectsView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       // Render 的 static site 把所有路徑都改寫成 index.html，沒有這條的話
       // 未知路徑會渲染成空白畫面，只在 console 留一則警告。
       path: '/:pathMatch(.*)*',
@@ -55,7 +61,9 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.guestOnly && auth.isAuthenticated) {
-    return { name: 'editor' }
+    // 導向專案列表而非編輯器：列表在觸控裝置上同樣可用，
+    // 而編輯器在小螢幕只會顯示「請用電腦開啟」。
+    return { name: 'projects' }
   }
 
   return true

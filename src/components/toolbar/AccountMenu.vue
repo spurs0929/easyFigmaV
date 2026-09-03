@@ -19,6 +19,11 @@ async function goLogin(): Promise<void> {
   await router.push({ name: 'login' })
 }
 
+async function goProjects(): Promise<void> {
+  popoverRef.value?.hide()
+  await router.push({ name: 'projects' })
+}
+
 async function handleLogout(): Promise<void> {
   loggingOut.value = true
   try {
@@ -68,6 +73,8 @@ async function handleLogout(): Promise<void> {
         <p v-if="auth.user?.email" class="account-email">{{ auth.user.email }}</p>
 
         <p v-if="auth.error" class="account-error">{{ auth.error }}</p>
+
+        <button class="account-action" @click="goProjects">我的專案</button>
 
         <button class="account-action" :disabled="loggingOut" @click="handleLogout">
           {{ loggingOut ? '登出中…' : '登出' }}

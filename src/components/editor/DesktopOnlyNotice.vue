@@ -13,6 +13,10 @@ function goToLogin(): void {
   void router.push({ name: 'login' })
 }
 
+function goToProjects(): void {
+  void router.push({ name: 'projects' })
+}
+
 // 登出後刻意不導頁，與桌面版 Toolbar 的行為一致。
 async function handleLogout(): Promise<void> {
   loggingOut.value = true
@@ -31,10 +35,7 @@ async function handleLogout(): Promise<void> {
       <h1>請用電腦開啟編輯器</h1>
       <p>畫布的縮放、拖曳與控制點操作需要滑鼠與較大的螢幕，目前尚未支援觸控裝置。</p>
 
-      <!--
-        觸控裝置沒有 Toolbar，因此已登入使用者仍需保留登出入口。
-        TODO: /projects 完成後，觸控裝置改導向專案列表。
-      -->
+      <!-- 觸控裝置沒有 Toolbar，因此已登入使用者仍需保留出口。 -->
       <template v-if="auth.isAuthenticated">
         <p class="desktop-only-sub">目前登入身分：{{ auth.displayName }}</p>
 
@@ -42,10 +43,12 @@ async function handleLogout(): Promise<void> {
           {{ auth.error }}
         </Message>
 
+        <Button label="查看我的專案" outlined @click="goToProjects" />
+
         <Button
           label="登出"
           severity="secondary"
-          outlined
+          text
           :loading="loggingOut"
           @click="handleLogout"
         />
