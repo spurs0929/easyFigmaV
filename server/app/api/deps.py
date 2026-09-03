@@ -1,5 +1,6 @@
+import json
 import uuid
-from typing import Annotated, NamedTuple
+from typing import Annotated, Any, NamedTuple
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
@@ -68,26 +69,6 @@ async def require_csrf_header(
         )
 
 
-async def enforce_body_size(request: Request) -> None:
-    """在解析 body 之前就擋掉過大的請求。
-
-    Pydantic 的驗證發生在整個 body 被讀進記憶體並解析成 dict 之後，
-    那時才拒絕已經太晚了。這裡看 Content-Length 提早回 413。
-    header 可能不存在（chunked encoding）或不實，所以 schema 層還有第二道。
-    """
-    raw = request.headers.get("content-length")
-    if raw is None or not raw.isdigit():
-        return
-
-    # JSON 外層還有欄位名與括號，留一點餘裕給 document 以外的內容
-    limit = settings.max_document_bytes + 8 * 1024
-    if int(raw) > limit:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="內容過大",
-        )
-
-
 def rate_limit(scope: str):
     """回傳一個限流 dependency。scope 用來區分不同端點的計數桶。"""
 
@@ -146,3 +127,24 @@ async def require_owned_project(
 
 
 OwnedProject = Annotated[ProjectRef, Depends(require_owned_project)]
+
+
+def ensure_document_size(document: dict[str, Any]) -> None:
+    """第二道大小檢查：實際序列化後的位元組數。
+
+    第一道是 BodySizeLimitMiddleware，它限制的是整個 HTTP body；這一道限制的
+    是 document 本身，兩者檢查的東西不同，都要有。
+
+    刻意回 413 而不是讓 Pydantic validator 產生 422：對呼叫端而言「內容過大」
+    就是同一件事，不該因為被哪一層攔到而拿到不同的狀態碼。
+
+    量的是 UTF-8 位元組不是 len(dict)——後者只是鍵的數量，跟大小無關。
+    用最精簡的分隔符是因為這裡要衡量的是「存進 Postgres 的量」，
+    JSONB 本來就會正規化，送來的空白不算數。
+    """
+    size = len(json.dumps(document, separators=(",", ":")).encode())
+    if size > settings.max_document_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"內容過大（{size} bytes，上限 {settings.max_document_bytes}）",
+        )

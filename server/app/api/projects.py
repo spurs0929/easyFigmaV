@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import load_only
 
-from app.api.deps import CurrentUser, DbSession, enforce_body_size
+from app.api.deps import CurrentUser, DbSession, ensure_document_size
 from app.core.config import settings
 from app.models import Project
 from app.schemas.project import (
@@ -19,7 +19,13 @@ from app.schemas.project import (
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
-_NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到專案")
+def _not_found() -> HTTPException:
+    """每次建立新的實例。
+
+    Exception 被 raise 時會綁上 traceback，共用同一個 module 層級的實例
+    等於讓並行的請求互相覆寫彼此的狀態。
+    """
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到專案")
 
 # 列表用的欄位。document 不在裡面——那可能是幾百 KB，列表不需要，
 # 而且用 load_only 是為了連「從資料庫撈出來」都省掉，不只是不回傳。
@@ -49,7 +55,7 @@ def owned_project(*, with_document: bool = False):
 
         project = await db.scalar(stmt)
         if project is None:
-            raise _NOT_FOUND
+            raise _not_found()
         return project
 
     return dependency
@@ -75,9 +81,9 @@ async def list_projects(user: CurrentUser, db: DbSession) -> list[Project]:
     "",
     response_model=ProjectDetail,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(enforce_body_size)],
 )
 async def create_project(payload: ProjectCreate, user: CurrentUser, db: DbSession) -> Project:
+    ensure_document_size(payload.document)
     project = Project(owner_id=user.id, name=payload.name, document=payload.document)
     db.add(project)
     await db.commit()
@@ -93,22 +99,36 @@ async def get_project(project: OwnedProjectWithDocument) -> Project:
 @router.patch("/{project_id}", response_model=ProjectSummary)
 async def rename_project(
     payload: ProjectRename, project: OwnedProject, db: DbSession
-) -> Project:
-    project.name = payload.name
-    # server_default=now() 只作用於 INSERT，UPDATE 必須自己帶，
-    # 否則列表的「最近修改」排序會停在建立時間。
-    project.updated_at = func.now()
-    # 刻意不動 document_version：它是 document 的修訂版本。改名也遞增的話，
-    # 使用者在列表頁改個名字，開著的編輯器下次存檔就會收到 409。
+) -> ProjectSummary:
+    """改名。
+
+    用 UPDATE ... RETURNING 而不是改屬性再 commit + refresh：refresh() 會重新
+    載入實例的欄位，而 document 是 deferred 的，意圖上不該在改名路徑被碰到。
+    直接指定要回傳的欄位，SQL 就不可能把它撈回來。
+
+    updated_at 必須明確帶上：server_default=now() 只作用於 INSERT，
+    UPDATE 不會自動更新，漏了的話列表的「最近修改」排序會停在建立時間，
+    而且不會有任何錯誤訊息。
+
+    刻意不動 document_version：它是 document 的修訂版本。改名也遞增的話，
+    使用者在列表頁改個名字，開著的編輯器下次存檔就會收到 409。
+    """
+    row = (
+        await db.execute(
+            update(Project)
+            .where(Project.id == project.id)
+            .values(name=payload.name, updated_at=func.now())
+            .returning(*_SUMMARY_COLUMNS)
+            .execution_options(synchronize_session=False)
+        )
+    ).one()
     await db.commit()
-    await db.refresh(project)
-    return project
+    return ProjectSummary.model_validate(row)
 
 
 @router.put(
     "/{project_id}/document",
     response_model=DocumentSaved,
-    dependencies=[Depends(enforce_body_size)],
 )
 async def save_document(
     project_id: uuid.UUID,
@@ -125,6 +145,8 @@ async def save_document(
     版本比對必須放進 UPDATE 本身。先讀出來、比對、再寫回的話，兩個並行請求
     可能都通過比對，後寫的那個會覆蓋掉前一個，樂觀鎖形同虛設。
     """
+    ensure_document_size(payload.document)
+
     result = await db.execute(
         update(Project)
         .where(
@@ -145,15 +167,14 @@ async def save_document(
         # 沒更新到任何列有兩種原因，要分開回應：專案不存在 / 不屬於你 → 404，
         # 存在但版本不符 → 409。少了這個查詢，衝突會被誤報成 404。
         #
-        # 這裡不呼叫 rollback：UPDATE 沒有影響任何列，沒有東西需要回滾，
-        # 而且 rollback 會把連線還回連線池，下一句查詢要重新取得連線。
+        # UPDATE 影響 0 列不是資料庫錯誤，transaction 仍可繼續查詢。
         current = await db.scalar(
             select(Project.document_version).where(
                 Project.id == project_id, Project.owner_id == user.id
             )
         )
         if current is None:
-            raise _NOT_FOUND
+            raise _not_found()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"專案已被其他視窗修改（目前版本 {current}），請重新載入",
@@ -171,5 +192,5 @@ async def delete_project(project_id: uuid.UUID, user: CurrentUser, db: DbSession
         delete(Project).where(Project.id == project_id, Project.owner_id == user.id)
     )
     if result.rowcount == 0:
-        raise _NOT_FOUND
+        raise _not_found()
     await db.commit()

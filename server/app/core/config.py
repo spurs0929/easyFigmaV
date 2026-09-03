@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     # bug 或惡意請求可以持續把巨型 JSON 塞進 Postgres。
     max_document_bytes: int = 2 * 1024 * 1024
 
+    # 整個請求 body 的上限，由 ASGI middleware 在資料進記憶體前強制。
+    # 比 document 上限寬一些，因為 JSON 還有欄位名、括號與其他欄位。
+    max_request_bytes: int = 2 * 1024 * 1024 + 64 * 1024
+
     # 專案列表一次最多回傳幾筆。沒有分頁，但也不能無上限。
     max_projects_per_page: int = 100
 

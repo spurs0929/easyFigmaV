@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
 from app.api.projects import router as projects_router
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import settings
 from app.db.session import engine
 
@@ -16,6 +17,10 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 app = FastAPI(title="easyFigmaV", version="0.1.0", lifespan=lifespan)
+
+# 必須早於路由：FastAPI 在解析 body 之後才執行 dependency，
+# 只有 ASGI middleware 攔得住尚未進入記憶體的資料。
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
 app.add_middleware(
     CORSMiddleware,
