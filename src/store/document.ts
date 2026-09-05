@@ -94,14 +94,25 @@ export const useDocumentStore = defineStore('document', () => {
       return false
     }
 
+    // 把 backend 與 generation 在同一個 tick 內取下來，之後只用區域變數。
+    // 期間若被 stopPersistence 取消或換了專案，下面的 commit 一律跳過。
+    const backend = _backend
+    const generation = _generation
+
     try {
       const snapshot = buildSnapshot()
-      await _backend.save(snapshot)
+      await backend.save(snapshot)
+      if (generation !== _generation) return false
+
       lastSavedAt.value = snapshot.savedAt
       errorMessage.value = ''
       saveState.value = 'saved'
       return true
     } catch (error) {
+      // 過期的存檔失敗更不能 commit：一個已經離開的專案回報 409，
+      // 會把 _conflicted 設起來，鎖住的卻是現在這個專案的自動存檔。
+      if (generation !== _generation) return false
+
       errorMessage.value = toErrorMessage(error)
       if (error instanceof DocumentConflictError) {
         _conflicted = true
@@ -156,15 +167,30 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function loadPersistedDocument(): Promise<boolean> {
-    if (!persistenceAvailable.value) {
+  /**
+   * 載入並套用文件。
+   *
+   * backend 與 generation 都由呼叫端傳進來，函式內不讀 _backend——非同步流程
+   * 中途去讀「全域目前值」，等於允許自己在別人的專案上做事。
+   *
+   * generation 檢查放在 await 之後、任何 side effect 之前。這是這個 token 的
+   * 用途：它保護的是 async operation 的 **commit point**，不是 await 後面的
+   * 最後幾行。晚一步檢查的話，過期的 load 仍然會把內容套進共用的 store。
+   */
+  async function loadPersistedDocument(
+    backend: DocumentBackend,
+    generation: number,
+  ): Promise<boolean> {
+    if (!backend.available) {
       saveState.value = 'idle'
       return false
     }
 
     saveState.value = 'loading'
     try {
-      const snapshot = await _backend.load()
+      const snapshot = await backend.load()
+      if (generation !== _generation) return false
+
       // 載入成功才解鎖。放在 try 之前的話，載入失敗會讓自動存檔恢復，
       // 但 backend 內部的衝突旗標還在，只是換成每次存檔都再撞一次。
       _conflicted = false
@@ -179,6 +205,8 @@ export const useDocumentStore = defineStore('document', () => {
       saveState.value = 'saved'
       return true
     } catch (error) {
+      if (generation !== _generation) return false
+
       errorMessage.value = toErrorMessage(error)
       saveState.value = 'error'
       return false
@@ -199,8 +227,9 @@ export const useDocumentStore = defineStore('document', () => {
     backendKind.value = backend.kind
     persistenceAvailable.value = backend.available
 
-    const loaded = await loadPersistedDocument()
-    // 載入期間已經被 stopPersistence 取消（例如使用者又切走了）就不要再接手。
+    const loaded = await loadPersistedDocument(backend, generation)
+    // 第二道檢查。上面那道擋的是「套用內容」，這道擋的是「註冊資源」——
+    // 兩件事都要擋，但擋不掉對方。
     if (generation !== _generation) return
 
     _watchStop = watch(
@@ -228,7 +257,8 @@ export const useDocumentStore = defineStore('document', () => {
       clearTimeout(_saveTimer)
       _saveTimer = null
     }
-    return loadPersistedDocument()
+    // 重新載入期間同樣可能被切走，所以一起帶上目前的 backend 與 generation。
+    return loadPersistedDocument(_backend, _generation)
   }
 
   function stopPersistence(): void {
