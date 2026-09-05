@@ -4,7 +4,7 @@ import {
   loadStoredDocumentSnapshot,
   saveStoredDocumentSnapshot,
 } from '@/services/documentStorage'
-import { getProject, saveDocument, type ProjectDocument } from '@/services/projects'
+import { getProject, saveDocument } from '@/services/projects'
 import { parseDocumentSnapshot, type DocumentSnapshot } from '@/types/document'
 
 /**
@@ -86,7 +86,7 @@ export function createCloudDocumentBackend(projectId: string): DocumentBackend {
       pending = null
 
       try {
-        const saved = await saveDocument(projectId, version, snapshot as unknown as ProjectDocument)
+        const saved = await saveDocument(projectId, version, snapshot)
         version = saved.document_version
       } catch (error) {
         // 失敗就丟掉 pending：衝突時繼續送等於拿舊版本硬蓋，

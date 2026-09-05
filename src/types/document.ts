@@ -1,11 +1,23 @@
 import { isCanvasComment, type CanvasComment } from '@/types/comment'
-import { ElementKind, type CanvasElement, type ElementStore, type VectorPoint } from '@/types/element'
+import {
+  ElementKind,
+  type CanvasElement,
+  type ElementStore,
+  type VectorPoint,
+} from '@/types/element'
 
 /** 快照格式版本號；未來若結構破壞性變更時遞增，舊資料可拒絕載入。 */
 export const DOCUMENT_SNAPSHOT_VERSION = 1 as const
 
-/** 完整的專案快照：elements + comments 二合一，用於 IndexedDB 存檔與 JSON 匯出入。 */
-export interface DocumentSnapshot {
+/**
+ * 完整的專案快照：elements + comments 二合一，用於 IndexedDB 存檔與 JSON 匯出入。
+ *
+ * 刻意用 type alias 而不是 interface。TypeScript 只給 type alias 隱含的
+ * index signature，interface 沒有——所以 interface 版本無法指派給
+ * Record<string, unknown>，也就是 API 層的 ProjectDocument。
+ * 少了這一點，每個呼叫點都得寫 `as unknown as ProjectDocument`。
+ */
+export type DocumentSnapshot = {
   version: typeof DOCUMENT_SNAPSHOT_VERSION
   savedAt: number
   elements: ElementStore
@@ -121,7 +133,8 @@ export function cloneCanvasElementSnapshot(element: CanvasElement): CanvasElemen
   if (element.letterSpacing !== undefined) snapshot.letterSpacing = element.letterSpacing
   if (element.textAlign !== undefined) snapshot.textAlign = element.textAlign
   if (element.points !== undefined) snapshot.points = [...element.points]
-  if (element.vectorPoints !== undefined) snapshot.vectorPoints = element.vectorPoints.map(cloneVectorPoint)
+  if (element.vectorPoints !== undefined)
+    snapshot.vectorPoints = element.vectorPoints.map(cloneVectorPoint)
   if (element.closed !== undefined) snapshot.closed = element.closed
   if (element.cornerRadius !== undefined) snapshot.cornerRadius = element.cornerRadius
   if (element.componentId !== undefined) snapshot.componentId = element.componentId
@@ -195,7 +208,8 @@ export function isCanvasElementSnapshot(value: unknown): value is CanvasElement 
     (value.letterSpacing === undefined || isFiniteNumber(value.letterSpacing)) &&
     (value.textAlign === undefined || TEXT_ALIGNMENTS.has(value.textAlign as string)) &&
     (value.points === undefined || isFiniteNumberArray(value.points)) &&
-    (value.vectorPoints === undefined || (Array.isArray(value.vectorPoints) && value.vectorPoints.every(isVectorPoint))) &&
+    (value.vectorPoints === undefined ||
+      (Array.isArray(value.vectorPoints) && value.vectorPoints.every(isVectorPoint))) &&
     (value.closed === undefined || typeof value.closed === 'boolean') &&
     (value.cornerRadius === undefined || isNonNegative(value.cornerRadius)) &&
     (value.componentId === undefined || typeof value.componentId === 'string')
@@ -234,7 +248,10 @@ export function isElementStoreSnapshot(value: unknown): value is ElementStore {
 
   // parentId === undefined 的元素必須全數出現在 rootIds，防止孤兒根節點
   for (const [, element] of byIdEntries) {
-    if ((element as CanvasElement).parentId === undefined && !rootIdSet.has((element as CanvasElement).id)) {
+    if (
+      (element as CanvasElement).parentId === undefined &&
+      !rootIdSet.has((element as CanvasElement).id)
+    ) {
       return false
     }
   }

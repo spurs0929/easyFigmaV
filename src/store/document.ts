@@ -48,6 +48,10 @@ export const useDocumentStore = defineStore('document', () => {
   let _watchStop: WatchStopHandle | null = null
   let _saveTimer: ReturnType<typeof setTimeout> | null = null
   let _started = false
+  // 每次 start/stop 遞增。startPersistence 在 await 之後用它確認自己還是
+  // 「當前」那一次啟動——否則快速切換路由時，已經被 stop 掉的那次會在
+  // 載入完成後補建 watcher 與事件監聽，造成洩漏與重複自動存檔。
+  let _generation = 0
   // _hydrating = true 時表示正在從 IndexedDB 還原資料；此期間 documentRevision 的變動不應觸發自動存檔。
   let _hydrating = false
   let _unbindLifecycle: (() => void) | null = null
@@ -125,10 +129,18 @@ export const useDocumentStore = defineStore('document', () => {
    * - pagehide：行動裝置切換 App / Safari BFCache 退場
    * - visibilitychange hidden：切換分頁（beforeunload 此時不觸發）
    */
+  /**
+   * 把待存的變更立刻送出。
+   *
+   * 本機模式下這相當於「保證寫入」，但雲端模式只是 best-effort：
+   * beforeunload 之後瀏覽器不保證 fetch 能跑完，最多會掉一個 debounce 週期的
+   * 變更。visibilitychange 那條路徑比較可靠，因為切分頁時頁面通常還活著。
+   */
+  function flushPendingSave(): void {
+    if (_saveTimer) void persistNow()
+  }
+
   function bindLifecycle(): void {
-    const flushPendingSave = (): void => {
-      if (_saveTimer) void persistNow()
-    }
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') flushPendingSave()
     }
@@ -151,9 +163,11 @@ export const useDocumentStore = defineStore('document', () => {
     }
 
     saveState.value = 'loading'
-    _conflicted = false
     try {
       const snapshot = await _backend.load()
+      // 載入成功才解鎖。放在 try 之前的話，載入失敗會讓自動存檔恢復，
+      // 但 backend 內部的衝突旗標還在，只是換成每次存檔都再撞一次。
+      _conflicted = false
       if (!snapshot) {
         saveState.value = 'idle'
         return false
@@ -180,11 +194,15 @@ export const useDocumentStore = defineStore('document', () => {
   async function startPersistence(backend: DocumentBackend = localDocumentBackend): Promise<void> {
     if (_started) return
     _started = true
+    const generation = ++_generation
     _backend = backend
     backendKind.value = backend.kind
     persistenceAvailable.value = backend.available
 
     const loaded = await loadPersistedDocument()
+    // 載入期間已經被 stopPersistence 取消（例如使用者又切走了）就不要再接手。
+    if (generation !== _generation) return
+
     _watchStop = watch(
       [() => elementStore.documentRevision, () => commentStore.documentRevision],
       () => {
@@ -214,14 +232,11 @@ export const useDocumentStore = defineStore('document', () => {
   }
 
   function stopPersistence(): void {
-    // 離開前把待存的變更送出去。persistNow 會自己清掉 timer，而它在第一個
-    // await 之前就讀完 _backend，所以下面把 _backend 換掉不影響這次存檔。
-    if (_saveTimer) void persistNow()
-
-    if (_saveTimer) {
-      clearTimeout(_saveTimer)
-      _saveTimer = null
-    }
+    // 離開前把待存的變更送出去。persistNow 進去第一件事就是清掉 timer，
+    // 而它在第一個 await 之前就讀完 _backend，所以下面把 _backend 換回本機
+    // 不影響這一次存檔。
+    _generation += 1
+    flushPendingSave()
     _watchStop?.()
     _watchStop = null
     _unbindLifecycle?.()

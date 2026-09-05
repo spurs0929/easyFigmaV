@@ -4,7 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
 import { useDocumentStore } from '@/store/document'
 import { useProjectsStore } from '@/store/projects'
-import type { ProjectDocument } from '@/services/projects'
 import DocumentImportDialog from './DocumentImportDialog.vue'
 
 const route = useRoute()
@@ -57,8 +56,7 @@ async function saveToCloud(): Promise<void> {
 
   uploading.value = true
   try {
-    const snapshot = documentStore.buildSnapshot()
-    const id = await projects.create(snapshot as unknown as ProjectDocument)
+    const id = await projects.create(documentStore.buildSnapshot())
     if (id) void router.push(`/p/${id}`)
   } finally {
     uploading.value = false
