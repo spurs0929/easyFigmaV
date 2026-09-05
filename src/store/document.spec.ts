@@ -45,6 +45,10 @@ function fakeBackend(tag: string, savedAt: number) {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 beforeEach(() => {
+  // commentStore 建立時會從 localStorage 取初始值（`easyfigma_comments`），
+  // 而 replaceAll 也會寫回去。jsdom 的 localStorage 在同一個檔案的測試之間
+  // 是共用的，不清掉的話上一個測試的留言會變成下一個測試的初始狀態。
+  localStorage.clear()
   setActivePinia(createPinia())
 })
 
