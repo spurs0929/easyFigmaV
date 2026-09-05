@@ -16,5 +16,10 @@ const auth = useAuthStore()
     多一層 div 會改變高度計算。
   -->
   <AppBootSplash v-if="!auth.ready" />
-  <RouterView v-else />
+  <!--
+    key 只對 /p/:id 有作用：其他路由本來就是不同元件，切換必然重建。
+    /p/a → /p/b 會重用同一個 EditorView 實例，onMounted 不會再跑，
+    持久化目標就會停在前一個專案。
+  -->
+  <RouterView v-else :key="$route.path" />
 </template>

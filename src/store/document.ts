@@ -3,17 +3,23 @@ import { defineStore } from 'pinia'
 import { useCommentStore } from '@/store/comment'
 import { useElementStore } from '@/store/element'
 import {
-  isIndexedDbSupported,
-  loadStoredDocumentSnapshot,
-  saveStoredDocumentSnapshot,
-} from '@/services/documentStorage'
-import { DOCUMENT_SNAPSHOT_VERSION, parseDocumentSnapshot, type DocumentSnapshot } from '@/types/document'
+  DocumentConflictError,
+  localDocumentBackend,
+  type DocumentBackend,
+} from '@/services/documentBackend'
+import {
+  DOCUMENT_SNAPSHOT_VERSION,
+  parseDocumentSnapshot,
+  type DocumentSnapshot,
+} from '@/types/document'
 
-/** 自動存檔的 UI 狀態機；toolbar 的狀態燈根據此值改變顏色。 */
-type SaveState = 'idle' | 'loading' | 'saving' | 'saved' | 'error'
-
-// 防抖延遲：使用者操作停止 800ms 後才寫 IndexedDB，避免每次滑鼠移動都觸發 I/O。
-const AUTOSAVE_DEBOUNCE_MS = 800
+/**
+ * 自動存檔的 UI 狀態機；toolbar 的狀態燈根據此值改變顏色。
+ *
+ * conflict 與 error 分開：error 是暫時性的（斷線、伺服器沒醒），重試就會好；
+ * conflict 是永久的，除非使用者重新載入，否則之後每一次存檔都會再撞一次。
+ */
+type SaveState = 'idle' | 'loading' | 'saving' | 'saved' | 'error' | 'conflict'
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown persistence error'
@@ -31,7 +37,13 @@ export const useDocumentStore = defineStore('document', () => {
   const saveState = ref<SaveState>('idle')
   const lastSavedAt = ref<number | null>(null)
   const errorMessage = ref('')
-  const persistenceAvailable = computed(() => isIndexedDbSupported())
+
+  // 目前的持久化目標。預設本機，進入 /p/:id 時由 startPersistence 換掉。
+  let _backend: DocumentBackend = localDocumentBackend
+
+  const backendKind = ref<DocumentBackend['kind']>(localDocumentBackend.kind)
+  const persistenceAvailable = ref(localDocumentBackend.available)
+  const isCloud = computed(() => backendKind.value === 'cloud')
 
   let _watchStop: WatchStopHandle | null = null
   let _saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -39,6 +51,9 @@ export const useDocumentStore = defineStore('document', () => {
   // _hydrating = true 時表示正在從 IndexedDB 還原資料；此期間 documentRevision 的變動不應觸發自動存檔。
   let _hydrating = false
   let _unbindLifecycle: (() => void) | null = null
+  // 衝突後鎖住自動存檔。不停掉 watcher 而是在這裡擋，因為重新載入之後
+  // 要能無縫恢復——重建 watcher 還要重新處理 _hydrating 的時序。
+  let _conflicted = false
 
   /** 從 elementStore 與 commentStore 各取深拷貝，組合成一份完整的快照物件。 */
   function buildSnapshot(): DocumentSnapshot {
@@ -77,26 +92,31 @@ export const useDocumentStore = defineStore('document', () => {
 
     try {
       const snapshot = buildSnapshot()
-      await saveStoredDocumentSnapshot(snapshot)
+      await _backend.save(snapshot)
       lastSavedAt.value = snapshot.savedAt
       errorMessage.value = ''
       saveState.value = 'saved'
       return true
     } catch (error) {
       errorMessage.value = toErrorMessage(error)
-      saveState.value = 'error'
+      if (error instanceof DocumentConflictError) {
+        _conflicted = true
+        saveState.value = 'conflict'
+      } else {
+        saveState.value = 'error'
+      }
       return false
     }
   }
 
   function scheduleAutosave(): void {
-    if (_hydrating || !persistenceAvailable.value) return
+    if (_hydrating || _conflicted || !persistenceAvailable.value) return
 
     if (_saveTimer) clearTimeout(_saveTimer)
     saveState.value = 'saving'
     _saveTimer = setTimeout(() => {
       void persistNow()
-    }, AUTOSAVE_DEBOUNCE_MS)
+    }, _backend.debounceMs)
   }
 
   /**
@@ -131,8 +151,9 @@ export const useDocumentStore = defineStore('document', () => {
     }
 
     saveState.value = 'loading'
+    _conflicted = false
     try {
-      const snapshot = await loadStoredDocumentSnapshot()
+      const snapshot = await _backend.load()
       if (!snapshot) {
         saveState.value = 'idle'
         return false
@@ -156,9 +177,12 @@ export const useDocumentStore = defineStore('document', () => {
    * 2. 開始監聽 documentRevision 變化以觸發自動存檔
    * 3. 若無存檔但 store 已有資料（e.g. 預設 mock），立刻存一份
    */
-  async function startPersistence(): Promise<void> {
+  async function startPersistence(backend: DocumentBackend = localDocumentBackend): Promise<void> {
     if (_started) return
     _started = true
+    _backend = backend
+    backendKind.value = backend.kind
+    persistenceAvailable.value = backend.available
 
     const loaded = await loadPersistedDocument()
     _watchStop = watch(
@@ -169,12 +193,31 @@ export const useDocumentStore = defineStore('document', () => {
     )
     bindLifecycle()
 
-    if (!loaded && (Object.keys(elementStore.byId).length > 0 || commentStore.comments.length > 0)) {
+    // 只在本機模式做。雲端專案一定有 document，載入失敗時畫布裡留著的是
+    // 上一份草稿，把它存上去就是拿別的內容覆蓋掉這個專案。
+    if (
+      _backend.kind === 'local' &&
+      !loaded &&
+      (Object.keys(elementStore.byId).length > 0 || commentStore.comments.length > 0)
+    ) {
       void persistNow()
     }
   }
 
+  /** 衝突後重新載入雲端版本。本機未存的變更會被丟棄，呼叫端要先確認過。 */
+  async function reloadFromBackend(): Promise<boolean> {
+    if (_saveTimer) {
+      clearTimeout(_saveTimer)
+      _saveTimer = null
+    }
+    return loadPersistedDocument()
+  }
+
   function stopPersistence(): void {
+    // 離開前把待存的變更送出去。persistNow 會自己清掉 timer，而它在第一個
+    // await 之前就讀完 _backend，所以下面把 _backend 換掉不影響這次存檔。
+    if (_saveTimer) void persistNow()
+
     if (_saveTimer) {
       clearTimeout(_saveTimer)
       _saveTimer = null
@@ -184,6 +227,10 @@ export const useDocumentStore = defineStore('document', () => {
     _unbindLifecycle?.()
     _unbindLifecycle = null
     _started = false
+    _conflicted = false
+    _backend = localDocumentBackend
+    backendKind.value = localDocumentBackend.kind
+    persistenceAvailable.value = localDocumentBackend.available
   }
 
   /** 將當前快照序列化為 JSON 並以動態 <a> 觸發瀏覽器下載，不依賴後端。 */
@@ -226,7 +273,10 @@ export const useDocumentStore = defineStore('document', () => {
     lastSavedAt,
     errorMessage,
     persistenceAvailable,
+    isCloud,
+    buildSnapshot,
     startPersistence,
+    reloadFromBackend,
     stopPersistence,
     persistNow,
     exportJson,

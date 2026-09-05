@@ -22,6 +22,14 @@ const router = createRouter({
       component: EditorView,
     },
     {
+      // 雲端專案。與 '/' 共用 EditorView，但持久化目標不同——
+      // 是兩個不同的目的地，不是在同一條路由裡用條件切換。
+      path: '/p/:id',
+      name: 'project',
+      component: EditorView,
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/LoginView.vue'),

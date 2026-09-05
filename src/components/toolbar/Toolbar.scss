@@ -209,7 +209,10 @@ $color-active-bg: #2a2a3e;
     background: #22c55e;
   }
 
-  &.is-error {
+  // conflict 與 error 共用紅色：對使用者而言都是「現在沒存成功」，
+  // 差別在對話框說明，不需要用兩種顏色再讓人多學一個語彙。
+  &.is-error,
+  &.is-conflict {
     background: #ef4444;
   }
 }
