@@ -8,13 +8,18 @@
 import asyncio
 import os
 import uuid
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
+
+# 與 app/core/config.py 的 _LOCAL_HOSTS 相同，刻意複製而不是 import：本模組必須
+# 在 import app.core.config 之前決定要連哪個資料庫，而該模組在 import 當下就會用
+# 開發用的 DATABASE_URL 實例化 Settings()。兩邊若要調整必須一起改。
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "db", "host.docker.internal"})
 
 
 class _DevEnv(BaseSettings):
@@ -34,6 +39,21 @@ class _DevEnv(BaseSettings):
     database_url: str = ""
 
 
+def _is_local(url: str) -> bool:
+    return (urlsplit(url).hostname or "") in _LOCAL_HOSTS
+
+
+def _identity(url: str) -> tuple[str, int | None, str]:
+    """判斷兩個 URL 是否指向同一個資料庫用的比較鍵。
+
+    本機主機名稱全部正規化成同一個 token：localhost 與 127.0.0.1 是同一台機器，
+    只比字串會讓安全閥漏掉 localhost/x 對 127.0.0.1/x 這種情況。
+    """
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    return ("<local>" if host in _LOCAL_HOSTS else host, parts.port, parts.path.lstrip("/"))
+
+
 def _derive_test_url(dev_url: str) -> str:
     """把開發資料庫名稱加上 _test 後綴。
 
@@ -49,22 +69,46 @@ def _derive_test_url(dev_url: str) -> str:
 
 
 _dev_url = _DevEnv().database_url
-if not _dev_url:
+_explicit_test_url = os.environ.get("TEST_DATABASE_URL")
+
+# 優先序：明確指定的 TEST_DATABASE_URL > 由 DATABASE_URL 推導。
+# TEST_DATABASE_URL 必須能單獨使用——CI 用 service container 時不會有 .env。
+if _explicit_test_url:
+    TEST_DATABASE_URL = _explicit_test_url
+elif _dev_url:
+    # 自動推導與自動 CREATE DATABASE 只在本機開放。這個 harness 會對目標執行
+    # drop_all，對遠端資料庫（Neon、Render）做這件事的代價無法承受，所以遠端
+    # 一律要求明確指定，不接受從 DATABASE_URL 猜。
+    if not _is_local(_dev_url):
+        raise RuntimeError(
+            f"DATABASE_URL 指向遠端主機（{urlsplit(_dev_url).hostname}），"
+            "拒絕自動推導測試資料庫——這個 harness 會對目標執行 drop_all。"
+            "請明確設定 TEST_DATABASE_URL 指向可拋棄的資料庫。"
+        )
+    TEST_DATABASE_URL = _derive_test_url(_dev_url)
+else:
     raise RuntimeError(
-        f"找不到 DATABASE_URL。請由 .env.example 複製一份 {SERVER_ROOT / '.env'}，"
-        "或直接設定 TEST_DATABASE_URL 環境變數。"
+        f"找不到資料庫設定。請由 .env.example 複製一份 {SERVER_ROOT / '.env'}，"
+        "或設定 TEST_DATABASE_URL 環境變數。"
     )
 
-# 覆寫優先序：TEST_DATABASE_URL > 由 DATABASE_URL 推導
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or _derive_test_url(_dev_url)
-
-# 安全閥。這個 harness 每次 session 開始會 drop_all，指到開發資料庫的代價是
-# 清空本機資料，所以寧可讓測試起不來。
-if urlsplit(TEST_DATABASE_URL).path == urlsplit(_dev_url).path:
+# 安全閥。指到開發資料庫的代價是清空本機資料，寧可讓測試起不來。
+# 比較的是 (host, port, database)，不是字串——localhost 與 127.0.0.1 要視為同一台。
+if _dev_url and _identity(TEST_DATABASE_URL) == _identity(_dev_url):
     raise RuntimeError(
-        "測試資料庫與開發資料庫同名，拒絕執行（測試會清空 schema）："
-        f"{urlsplit(_dev_url).path.lstrip('/')}"
+        "測試資料庫與 DATABASE_URL 指向同一個資料庫，拒絕執行（測試會清空 schema）："
+        f"{urlsplit(_dev_url).hostname}/{urlsplit(_dev_url).path.lstrip('/')}"
     )
+
+
+def _url_source() -> str:
+    return "TEST_DATABASE_URL" if os.environ.get("TEST_DATABASE_URL") else "由 DATABASE_URL 推導"
+
+
+def _describe_target() -> str:
+    parts = urlsplit(TEST_DATABASE_URL)
+    return f"{parts.path.lstrip('/')} @ {parts.hostname}:{parts.port}（{_url_source()}）"
+
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["ENVIRONMENT"] = "test"
@@ -124,7 +168,18 @@ async def _ensure_database() -> None:
                 text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": db_name}
             )
             if not exists:
-                await conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+                # 名稱來自本機設定而非使用者輸入，但識別字裡的雙引號仍要跳脫，
+                # 否則含引號的資料庫名稱會直接破壞這段 SQL。
+                quoted = db_name.replace('"', '""')
+                await conn.execute(text(f'CREATE DATABASE "{quoted}"'))
+    except Exception as exc:
+        # -q 會吃掉 pytest 的 report header，所以把目標與來源直接寫進例外訊息，
+        # 否則使用者只會看到「密碼錯誤」而不知道它連去了哪。
+        raise RuntimeError(
+            f"測試資料庫準備失敗：{_describe_target()}。"
+            "若這不是你預期的位置，多半是 shell session 裡殘留了 TEST_DATABASE_URL"
+            "（PowerShell：Remove-Item Env:TEST_DATABASE_URL）。"
+        ) from exc
     finally:
         await admin.dispose()
 
@@ -136,7 +191,7 @@ async def _create_schema(engine: AsyncEngine) -> None:
 
 
 @pytest.fixture(scope="session")
-def engine() -> AsyncEngine:
+def engine() -> Iterator[AsyncEngine]:
     """整個 session 共用一個 engine。
 
     poolclass=NullPool 是必要的，不是效能取捨：asyncpg 的連線綁定在建立它的
@@ -154,7 +209,10 @@ def engine() -> AsyncEngine:
         poolclass=NullPool,
     )
     asyncio.run(_create_schema(eng))
-    return eng
+    yield eng
+    # NullPool 之下 dispose() 幾乎是 no-op（沒有連線被保留），但不依賴這個
+    # 前提：pool 策略若哪天改掉，這裡不該變成洩漏點。
+    asyncio.run(eng.dispose())
 
 
 @pytest_asyncio.fixture
@@ -237,3 +295,13 @@ def auth() -> Callable[[User], dict[str, str]]:
         return {"Authorization": f"Bearer {token}"}
 
     return _header
+
+
+def pytest_report_header() -> list[str]:
+    """每次執行都印出實際連到的測試資料庫。
+
+    連錯地方是這個 harness 最容易發生、也最難察覺的錯誤：環境變數會留在 shell
+    session 裡跨次數生效，而失敗訊息只會說密碼錯，不會說它連去了哪。
+    只印資料庫、主機、來源，不印使用者與密碼。
+    """
+    return [f"test database: {_describe_target()}"]
