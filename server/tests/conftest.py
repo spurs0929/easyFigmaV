@@ -9,13 +9,62 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-# 預設指向本機 compose 起的另一個 database；CI 由 service container 覆寫。
-# 刻意不重用 DATABASE_URL：測試會 drop_all，指錯資料庫的代價是清空開發資料。
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/easyfigma_test",
-)
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SERVER_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _DevEnv(BaseSettings):
+    """只讀出 DATABASE_URL，用來推導測試資料庫。
+
+    刻意用 pydantic-settings 而不是自己 parse .env：解析規則與優先序（環境變數
+    蓋過 .env）必須跟 app.core.config 完全一致，否則測試連到的會是另一個地方。
+    env_file 用絕對路徑，讓 pytest 從 repo 根目錄或 server/ 執行都一樣。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=SERVER_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    database_url: str = ""
+
+
+def _derive_test_url(dev_url: str) -> str:
+    """把開發資料庫名稱加上 _test 後綴。
+
+    這樣就不需要任何額外設定：能跑起服務的機器就能跑測試。
+    """
+    parts = urlsplit(dev_url)
+    name = parts.path.lstrip("/")
+    if not name:
+        raise RuntimeError(f"DATABASE_URL 沒有資料庫名稱：{dev_url}")
+    if name.endswith("_test"):
+        return dev_url
+    return urlunsplit((parts.scheme, parts.netloc, f"/{name}_test", parts.query, parts.fragment))
+
+
+_dev_url = _DevEnv().database_url
+if not _dev_url:
+    raise RuntimeError(
+        f"找不到 DATABASE_URL。請由 .env.example 複製一份 {SERVER_ROOT / '.env'}，"
+        "或直接設定 TEST_DATABASE_URL 環境變數。"
+    )
+
+# 覆寫優先序：TEST_DATABASE_URL > 由 DATABASE_URL 推導
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or _derive_test_url(_dev_url)
+
+# 安全閥。這個 harness 每次 session 開始會 drop_all，指到開發資料庫的代價是
+# 清空本機資料，所以寧可讓測試起不來。
+if urlsplit(TEST_DATABASE_URL).path == urlsplit(_dev_url).path:
+    raise RuntimeError(
+        "測試資料庫與開發資料庫同名，拒絕執行（測試會清空 schema）："
+        f"{urlsplit(_dev_url).path.lstrip('/')}"
+    )
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["ENVIRONMENT"] = "test"
@@ -26,6 +75,7 @@ os.environ.setdefault("REFRESH_TOKEN_PEPPER", "test-only-pepper-not-used-anywher
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402
     AsyncEngine,
     AsyncSession,
@@ -52,6 +102,33 @@ EMPTY_DOCUMENT: dict = {
 }
 
 
+async def _ensure_database() -> None:
+    """測試資料庫不存在就建立，不必先手動 createdb。
+
+    CREATE DATABASE 不能在交易內執行，所以連到 maintenance 資料庫並用
+    AUTOCOMMIT。名稱來自本機設定而非使用者輸入，但仍用識別字引號包起來。
+    """
+    parts = urlsplit(TEST_DATABASE_URL)
+    db_name = parts.path.lstrip("/")
+    admin_url = urlunsplit((parts.scheme, parts.netloc, "/postgres", parts.query, parts.fragment))
+
+    admin = create_async_engine(
+        admin_url,
+        connect_args=settings.connect_args,
+        poolclass=NullPool,
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        async with admin.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": db_name}
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+    finally:
+        await admin.dispose()
+
+
 async def _create_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -70,6 +147,7 @@ def engine() -> AsyncEngine:
     schema 用 asyncio.run 建立而不是做成 async fixture，是為了完全避開
     pytest-asyncio 的 fixture loop scope 語意——那是版本間變動最頻繁的部分。
     """
+    asyncio.run(_ensure_database())
     eng = create_async_engine(
         settings.sqlalchemy_url,
         connect_args=settings.connect_args,
