@@ -21,6 +21,8 @@ SERVER_ROOT = Path(__file__).resolve().parents[1]
 # 開發用的 DATABASE_URL 實例化 Settings()。兩邊若要調整必須一起改。
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "db", "host.docker.internal"})
 
+_POSTGRES_DEFAULT_PORT = 5432
+
 
 class _DevEnv(BaseSettings):
     """只讀出 DATABASE_URL，用來推導測試資料庫。
@@ -43,15 +45,24 @@ def _is_local(url: str) -> bool:
     return (urlsplit(url).hostname or "") in _LOCAL_HOSTS
 
 
-def _identity(url: str) -> tuple[str, int | None, str]:
+def _identity(url: str) -> tuple[str, int, str]:
     """判斷兩個 URL 是否指向同一個資料庫用的比較鍵。
 
-    本機主機名稱全部正規化成同一個 token：localhost 與 127.0.0.1 是同一台機器，
-    只比字串會讓安全閥漏掉 localhost/x 對 127.0.0.1/x 這種情況。
+    兩處正規化，兩處都是安全閥漏判的來源：
+
+    1. 本機主機名稱收斂成同一個 token——localhost 與 127.0.0.1 是同一台機器。
+    2. 省略的埠號補成 5432——`//localhost/db` 與 `//localhost:5432/db` 是同一個
+       資料庫，不補的話一邊是 None、一邊是 5432，比較結果會是「不同」。
+
+    這個 harness 只支援 PostgreSQL，所以直接寫死預設埠號。
     """
     parts = urlsplit(url)
     host = parts.hostname or ""
-    return ("<local>" if host in _LOCAL_HOSTS else host, parts.port, parts.path.lstrip("/"))
+    return (
+        "<local>" if host in _LOCAL_HOSTS else host,
+        parts.port or _POSTGRES_DEFAULT_PORT,
+        parts.path.lstrip("/"),
+    )
 
 
 def _derive_test_url(dev_url: str) -> str:
@@ -76,9 +87,10 @@ _explicit_test_url = os.environ.get("TEST_DATABASE_URL")
 if _explicit_test_url:
     TEST_DATABASE_URL = _explicit_test_url
 elif _dev_url:
-    # 自動推導與自動 CREATE DATABASE 只在本機開放。這個 harness 會對目標執行
-    # drop_all，對遠端資料庫（Neon、Render）做這件事的代價無法承受，所以遠端
-    # 一律要求明確指定，不接受從 DATABASE_URL 猜。
+    # 只有「自動推導」限制在本機。這個 harness 會對目標 CREATE DATABASE 再
+    # drop_all，對遠端資料庫（Neon、Render）猜錯目標的代價無法承受。
+    # 遠端不是禁止，是要求透過 TEST_DATABASE_URL 明確指定可拋棄的測試資料庫——
+    # 那是使用者親口指定的目標，就不再代他判斷。
     if not _is_local(_dev_url):
         raise RuntimeError(
             f"DATABASE_URL 指向遠端主機（{urlsplit(_dev_url).hostname}），"
