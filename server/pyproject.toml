@@ -7,3 +7,15 @@ extend-exclude = ["alembic/versions"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
 ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest 必須在 import app.* 之前設定環境變數，見該檔案頂端說明
+"tests/conftest.py" = ["E402"]
+# 測試裡的假密碼不是硬編憑證
+"tests/*" = ["S105", "S106"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# 不設會有 PytestDeprecationWarning；未來版本預設就是 function
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
