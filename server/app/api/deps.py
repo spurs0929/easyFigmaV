@@ -1,6 +1,5 @@
 import json
-import uuid
-from typing import Annotated, Any, NamedTuple
+from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
@@ -10,7 +9,7 @@ from app.core.config import settings
 from app.core.ratelimit import auth_limiter, client_key
 from app.core.security import decode_access_token
 from app.db.session import get_db
-from app.models import Project, User
+from app.models import User
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
@@ -28,7 +27,7 @@ async def get_current_user(
     """之後所有需要登入的端點都掛這個。
 
     注意這只回答「你是誰」，不回答「你能不能碰這個資源」。授權是另一件事，
-    要用 require_project_role 之類的 dependency 處理——只驗身分不驗擁有權
+    由 projects.py 的 owned_project() dependency 處理——只驗身分不驗擁有權
     就是 IDOR 的來源。
     """
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -80,53 +79,6 @@ def rate_limit(scope: str):
             )
 
     return _check
-
-
-# ─────────────────────────── 專案 ───────────────────────────
-
-
-class ProjectRef(NamedTuple):
-    """通過授權的專案，只帶必要欄位。
-
-    刻意不載入 document：autosave 每幾秒送一次，若為了檢查擁有權而先把舊的
-    document（可能數百 KB）讀出來再覆蓋，等於把資料庫流量加倍。
-    需要完整內容的端點自己再依 id 取一次。
-    """
-
-    id: uuid.UUID
-    document_version: int
-
-
-async def require_owned_project(
-    project_id: uuid.UUID,
-    user: CurrentUser,
-    db: DbSession,
-) -> ProjectRef:
-    """所有專案端點的授權入口。
-
-    「不存在」與「不屬於你」都回 404。若對後者回 403，等於告訴對方
-    「這個 UUID 確實對應到一個專案，只是不是你的」——UUID 雖然難猜，
-    但沒有必要提供這個資訊。
-
-    之後加入 project_members 時，把這裡改成處理 owner OR member 即可，
-    端點的簽章完全不用動。
-    """
-    row = (
-        await db.execute(
-            select(Project.id, Project.document_version).where(
-                Project.id == project_id,
-                Project.owner_id == user.id,
-            )
-        )
-    ).first()
-
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "找不到專案")
-
-    return ProjectRef(row.id, row.document_version)
-
-
-OwnedProject = Annotated[ProjectRef, Depends(require_owned_project)]
 
 
 def ensure_document_size(document: dict[str, Any]) -> None:
