@@ -1,0 +1,86 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/backend.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - '.github/workflows/backend.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: easyfigma_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d easyfigma_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # 兩個資料庫刻意分開：
+      #   easyfigma_ci      給 alembic（upgrade head + check）
+      #   easyfigma_ci_test 給 pytest（conftest 自己 CREATE DATABASE + create_all）
+      # 共用會撞 DuplicateTable——create_all 建的 schema 沒有 alembic_version。
+      #
+      # 存成 CI_* 而不是直接叫 DATABASE_URL：conftest 的 _DevEnv 會讀 DATABASE_URL，
+      # 放在 job 層級就會漏進 pytest step。只在需要的 step 才映射。
+      CI_DB_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/easyfigma_ci
+      CI_TEST_DB_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/easyfigma_ci_test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            server/requirements.txt
+            server/requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: ruff check .
+
+      # alembic/env.py 會 import app.core.config，Settings() 要求兩把 secret 存在。
+      # ENVIRONMENT=test 不做強度檢查，值只需非空。
+      - name: Migration drift check
+        env:
+          DATABASE_URL: ${{ env.CI_DB_URL }}
+          ENVIRONMENT: test
+          SECRET_KEY: ci-only-secret-not-used-anywhere-else
+          REFRESH_TOKEN_PEPPER: ci-only-pepper-not-used-anywhere-else
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Pytest
+        env:
+          TEST_DATABASE_URL: ${{ env.CI_TEST_DB_URL }}
+        run: pytest -q
