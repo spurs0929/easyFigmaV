@@ -240,4 +240,4 @@ onUnmounted(() => {
   </aside>
 </template>
 
-<style src="./Toolbar.scss" lang="scss" />
+<style src="./EditorToolbar.scss" lang="scss" />

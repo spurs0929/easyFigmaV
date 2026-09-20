@@ -458,7 +458,8 @@ export const useElementStore = defineStore('element', () => {
   function select(id: string, multi = false): void {
     if (multi) {
       const next = new Set(_selectedIds.value)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       _selectedIds.value = next
     } else {
       _selectedIds.value = new Set([id])

@@ -86,9 +86,6 @@ const {
   textareaRef,
   editingTextDraft,
   editingTextStyle,
-  commitTextEdit,
-  cancelTextEdit,
-  startTextEdit,
   scheduleTextEdit,
   beginTextEdit,
   createTextElementAt,
@@ -142,13 +139,6 @@ const HANDLE_ATTR = {
   corner: 'selectionHandleCorner',
   elementId: 'selectionElementId',
 } as const
-const TEXT_ELEMENT_DEFAULT_WIDTH = 200
-const TEXT_ELEMENT_DEFAULT_HEIGHT_RATIO = 1.5
-const TEXT_OVERLAY_MIN_WIDTH_RATIO = 2
-const TEXT_OVERLAY_MIN_HEIGHT_RATIO = 1.5
-const TEXT_OVERLAY_POSITION = 'fixed'
-const TEXT_OVERLAY_Z_INDEX = 2000
-
 // ── Measurement overlay 狀態 ──────────────────────────────────────────────────
 /** 拖曳進行中旗標；由 watchEffect 讀取以決定是否更新覆蓋層。 */
 let _isDragging = false
@@ -763,7 +753,6 @@ function registerShapeEvents(shape: Konva.Shape, elId: string): void {
     e.cancelBubble = true
     if (e.evt.button !== 0) return
     // 若元素屬於群組，第一次點擊選取群組而非子元素（Figma 行為）
-    const selectId = rootSelectableId(elId)
     const selectedRootId = rootSelectableId(elId)
     if (!e.evt.shiftKey) elementStore.clearSelection()
     elementStore.select(selectedRootId, e.evt.shiftKey)
@@ -1364,4 +1353,4 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style src="./canvas.scss" lang="scss" scoped />
+<style src="./CanvasArea.scss" lang="scss" scoped />

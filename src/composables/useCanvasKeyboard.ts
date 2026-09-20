@@ -15,7 +15,7 @@ export interface CanvasKeyboardOptions {
   duplicateSelected: () => void
   groupSelected: () => void
   ungroupSelected: () => void
-  /** Alt 放開後需要重繪 measurement overlay，由 canvas.vue 提供。 */
+  /** Alt 放開後需要重繪 measurement overlay，由 CanvasArea.vue 提供。 */
   onAltRelease: () => void
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 右鍵選單元件：抽離自 canvas.vue，同時供畫布與圖層面板共用。
+ * 右鍵選單元件：抽離自 CanvasArea.vue，同時供畫布與圖層面板共用。
  * Teleport 至 body，避免 z-index 與 Konva DOM 堆疊衝突。
  */
 import { computed } from 'vue'
@@ -8,7 +8,7 @@ import { useElementStore } from '@/store/element'
 import { useCanvasActions } from '@/composables/useCanvasActions'
 import type { ContextMenuState } from '@/types/canvas'
 
-const props = defineProps<{
+defineProps<{
   /** 選單位置與可用操作狀態；null 表示選單關閉 */
   contextMenu: ContextMenuState | null
 }>()
@@ -97,18 +97,10 @@ function selectAll(): void {
       @click.stop
     >
       <template v-if="contextMenu.hasSelection">
-        <li class="ctx-item" @click="bringToFront">
-          Bring to Front <kbd>]</kbd>
-        </li>
-        <li class="ctx-item" @click="moveUp">
-          Move Up
-        </li>
-        <li class="ctx-item" @click="moveDown">
-          Move Down
-        </li>
-        <li class="ctx-item" @click="sendToBack">
-          Send to Back <kbd>[</kbd>
-        </li>
+        <li class="ctx-item" @click="bringToFront">Bring to Front <kbd>]</kbd></li>
+        <li class="ctx-item" @click="moveUp">Move Up</li>
+        <li class="ctx-item" @click="moveDown">Move Down</li>
+        <li class="ctx-item" @click="sendToBack">Send to Back <kbd>[</kbd></li>
         <li class="ctx-sep" />
         <li v-if="contextMenu.canGroup" class="ctx-item" @click="onGroup">
           Group <kbd>Ctrl G</kbd>
@@ -117,18 +109,12 @@ function selectAll(): void {
           Ungroup <kbd>Ctrl Shift G</kbd>
         </li>
         <li class="ctx-sep" />
-        <li class="ctx-item" @click="onDuplicate">
-          Duplicate <kbd>Ctrl D</kbd>
-        </li>
+        <li class="ctx-item" @click="onDuplicate">Duplicate <kbd>Ctrl D</kbd></li>
         <li class="ctx-sep" />
-        <li class="ctx-item ctx-item--danger" @click="onDelete">
-          Delete <kbd>Del</kbd>
-        </li>
+        <li class="ctx-item ctx-item--danger" @click="onDelete">Delete <kbd>Del</kbd></li>
       </template>
       <template v-else>
-        <li class="ctx-item" @click="selectAll">
-          Select All <kbd>Ctrl A</kbd>
-        </li>
+        <li class="ctx-item" @click="selectAll">Select All <kbd>Ctrl A</kbd></li>
       </template>
     </ul>
   </Teleport>

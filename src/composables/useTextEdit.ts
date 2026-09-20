@@ -88,7 +88,7 @@ export function useTextEdit(
     return style
   })
 
-  function _exitTextEdit(id: string): void {
+  function _exitTextEdit(): void {
     if (_pendingTextEditTimer !== null) {
       window.clearTimeout(_pendingTextEditTimer)
       _pendingTextEditTimer = null
@@ -151,7 +151,7 @@ export function useTextEdit(
     const newText = editingTextDraft.value
     const trimmedText = newText.trim()
     if (trimmedText.length === 0 && elementStore.get(id)) {
-      _exitTextEdit(id)
+      _exitTextEdit()
       elementStore.remove(id)
       return
     }
@@ -160,7 +160,7 @@ export function useTextEdit(
       elementStore.update(id, { text: newText })
       elementStore.pushSnapshot()
     }
-    _exitTextEdit(id)
+    _exitTextEdit()
   }
 
   /**
@@ -172,7 +172,7 @@ export function useTextEdit(
   function cancelTextEdit(): void {
     const id = editingTextId.value
     if (!id) return
-    _exitTextEdit(id)
+    _exitTextEdit()
   }
 
   function scheduleTextEdit(elId: string): void {

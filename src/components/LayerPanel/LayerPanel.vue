@@ -196,7 +196,8 @@ function onListContextMenu(e: MouseEvent): void {
 function onToggleClick(id: string, e: MouseEvent): void {
   e.stopPropagation()
   const next = new Set(expandedIds.value)
-  next.has(id) ? next.delete(id) : next.add(id)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
   expandedIds.value = next
 }
 
@@ -272,9 +273,7 @@ onUnmounted(() => {
         <span v-if="!row.el.visible" class="layer-row__badge" aria-label="已隱藏">👁</span>
       </div>
 
-      <div v-if="flatLayers.length === 0" class="layer-panel__empty">
-        沒有圖層
-      </div>
+      <div v-if="flatLayers.length === 0" class="layer-panel__empty">沒有圖層</div>
     </div>
 
     <SelectionContextMenu :context-menu="contextMenu" @close="closeContextMenu" />
