@@ -7,6 +7,7 @@ from sqlalchemy.orm import load_only
 
 from app.api.deps import CurrentUser, DbSession, ensure_document_size
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.models import Project
 from app.schemas.project import (
     DocumentSaved,
@@ -18,6 +19,8 @@ from app.schemas.project import (
 )
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+logger = get_logger(__name__)
 
 def _not_found() -> HTTPException:
     """每次建立新的實例。
@@ -175,6 +178,14 @@ async def save_document(
         )
         if current is None:
             raise _not_found()
+        # 樂觀鎖衝突是正常流程的一部分，不是錯誤；記成 info 是為了量測——
+        # 衝突頻率是判斷「單機持久化是否還夠用」的依據之一。
+        logger.info(
+            "document_save_conflict",
+            project_id=str(project_id),
+            expected_version=payload.document_version,
+            current_version=current,
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"專案已被其他視窗修改（目前版本 {current}），請重新載入",

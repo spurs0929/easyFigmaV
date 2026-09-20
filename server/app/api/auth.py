@@ -1,4 +1,3 @@
-import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -9,11 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from app.api.deps import CurrentUser, DbSession, rate_limit, require_csrf_header
 from app.core import security
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.core.ratelimit import auth_limiter, client_key
 from app.models import RefreshToken, User
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserResponse
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -94,13 +94,19 @@ async def _issue_session(
     )
 
 
-async def _revoke_family(db: DbSession, family_id: uuid.UUID) -> None:
+async def _revoke_family(db: DbSession, family_id: uuid.UUID, reason: str) -> None:
+    """撤銷整條 family。
+
+    reason 是必填而不是選填：這些紀錄是事後判斷「這個 session 為什麼消失」的
+    唯一依據，讓呼叫端可以省略等於允許產生無法解讀的事件。
+    """
     await db.execute(
         update(RefreshToken)
         .where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))
         .values(revoked_at=datetime.now(UTC))
     )
     await db.commit()
+    logger.info("refresh_family_revoked", family_id=str(family_id), reason=reason)
 
 
 # ─────────────────────────── 端點 ───────────────────────────
@@ -160,11 +166,13 @@ async def login(
         # 不能直接 return——查無帳號會比「算完 argon2 才發現密碼錯」快很多，
         # 回應時間本身就變成帳號存在性的 oracle。這裡墊掉那段時間。
         await security.burn_password_time(payload.password)
-        logger.warning("login failed: reason=user_not_found")
+        # 刻意不記 email：對外不揭露帳號是否存在，log 也沒有理由留下未註冊者的
+        # 聯絡方式。要追特定來源的暴力嘗試，request context 裡的 client_ip 就夠。
+        logger.warning("login_failed", reason="user_not_found")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _INVALID_CREDENTIALS)
 
     if not await security.verify_password(payload.password, user.password_hash):
-        logger.warning("login failed: reason=bad_password user_id=%s", user.id)
+        logger.warning("login_failed", reason="bad_password", user_id=str(user.id))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _INVALID_CREDENTIALS)
 
     # 參數調高之後，讓使用者在下次登入時無痛升級，不必重設密碼
@@ -173,6 +181,7 @@ async def login(
 
     # 成功就清掉計數，避免使用者被自己先前的失誤鎖住
     auth_limiter.reset(client_key(request, "login"))
+    logger.info("login_succeeded", user_id=str(user.id))
     return await _issue_session(db, response, user, request)
 
 
@@ -219,12 +228,13 @@ async def refresh(request: Request, response: Response, db: DbSession) -> TokenR
             )
 
         # 已撤銷、又超出寬限窗 = 同一條 token 被用了第二次。正常客戶端不會這樣。
+        # error 級別：LoggingIntegration 會把這一筆送成 Sentry 事件。
         logger.error(
-            "refresh token replay detected: user_id=%s family_id=%s",
-            token.user_id,
-            token.family_id,
+            "refresh_token_replay_detected",
+            user_id=str(token.user_id),
+            family_id=str(token.family_id),
         )
-        await _revoke_family(db, token.family_id)
+        await _revoke_family(db, token.family_id, reason="replay_detected")
         _clear_refresh_cookie(response)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session 已失效，請重新登入")
 
@@ -300,7 +310,7 @@ async def logout(request: Request, response: Response, db: DbSession) -> Respons
             )
         )
         if token is not None:
-            await _revoke_family(db, token.family_id)
+            await _revoke_family(db, token.family_id, reason="logout")
 
     _clear_refresh_cookie(response)
     response.status_code = status.HTTP_204_NO_CONTENT
@@ -324,6 +334,7 @@ async def logout_all(user: CurrentUser, response: Response, db: DbSession) -> Re
         .values(revoked_at=datetime.now(UTC))
     )
     await db.commit()
+    logger.info("all_sessions_revoked", user_id=str(user.id))
 
     _clear_refresh_cookie(response)
     response.status_code = status.HTTP_204_NO_CONTENT

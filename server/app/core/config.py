@@ -2,7 +2,7 @@ import ssl
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # asyncpg 不吃 libpq 的連線參數，要從 query string 濾掉，改用 connect_args 表達
@@ -115,6 +115,20 @@ class Settings(BaseSettings):
     auth_rate_limit_attempts: int = 10
     auth_rate_limit_window_seconds: int = 300
 
+    # ── 可觀測性 ──────────────────────────────────────────────
+    log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
+    # 留 None 表示依環境決定：production 輸出 JSON，其他輸出人眼可讀的單行。
+    # 明確設定時以設定為準，才有辦法在本機重現 production 的輸出。
+    log_json: bool | None = None
+
+    # 沒有 DSN 就完全不初始化 Sentry，本機與 CI 不需要為此準備任何東西。
+    sentry_dsn: str | None = None
+    # 只送錯誤、不採樣 performance trace。要看 trace 再調高，
+    # 免費方案的額度會被高頻的健康檢查吃掉。
+    sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    # 讓 Sentry 把事件歸到某個版本。Render 有 RENDER_GIT_COMMIT 可以映射過來。
+    release: str | None = None
+
     # ── 以下由 _resolve 填好，不要從環境變數設定 ──────────────
     sqlalchemy_url: str = ""
     db_host: str = ""
@@ -124,6 +138,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def log_as_json(self) -> bool:
+        return self.is_production if self.log_json is None else self.log_json
 
     @model_validator(mode="after")
     def _resolve(self) -> "Settings":

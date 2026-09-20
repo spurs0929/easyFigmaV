@@ -19,3 +19,11 @@ alembic==1.14.0
 # Auth
 argon2-cffi==23.1.0
 pyjwt==2.10.1
+
+# --- Observability ---
+# structlog renders the app's own logs; stdlib logging records from uvicorn and
+# SQLAlchemy are routed through the same processor chain (see app/core/logging.py).
+structlog==26.1.0
+# The FastAPI/Starlette integrations ship inside the base package, so no extra is
+# needed here. Pinned like everything else: an SDK bump changes what gets sent.
+sentry-sdk==2.69.2
