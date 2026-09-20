@@ -38,6 +38,7 @@ _SENSITIVE_KEY_PARTS = (
 )
 
 _REDACTED = "***"
+_TRUNCATED = "[truncated]"
 
 # 遮蔽只往下走三層。log 裡的巢狀結構不該太深，而無上限的遞迴
 # 會讓一份畸形的 payload 變成 CPU 成本。
@@ -51,7 +52,11 @@ def _is_sensitive(key: str) -> bool:
 
 def _scrub(value: Any, depth: int) -> Any:
     if depth >= _MAX_DEPTH:
-        return value
+        # 超過深度的巢狀結構整塊換掉，不原樣輸出。原樣返回的話，深度上限本身
+        # 就成了繞過遮蔽的路徑：只要 secret 埋得夠深就會被完整印出來，而那正是
+        # 這道 processor 要擋的事。純量沒有這個問題——它的 key 在上一層已經
+        # 檢查過，直接保留。
+        return _TRUNCATED if isinstance(value, dict | list | tuple) else value
     if isinstance(value, dict):
         return {
             key: (

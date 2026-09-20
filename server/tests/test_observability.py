@@ -165,6 +165,36 @@ def test_redacts_nested_values():
     assert event["items"][0]["secret"] == "***"
 
 
+def test_truncates_structures_beyond_max_depth():
+    """深度上限不能變成繞過遮蔽的路徑。"""
+    event = redact_sensitive(
+        None,
+        "info",
+        {"event": "x", "request": {"user": {"auth": {"access_token": "VERY_SECRET"}}}},
+    )
+
+    assert event["request"]["user"]["auth"] == "[truncated]"
+    assert "VERY_SECRET" not in str(event)
+
+
+def test_truncates_deep_sequences():
+    event = redact_sensitive(
+        None,
+        "info",
+        {"event": "x", "a": {"b": {"c": [{"token": "VERY_SECRET"}]}}},
+    )
+
+    assert event["a"]["b"]["c"] == "[truncated]"
+    assert "VERY_SECRET" not in str(event)
+
+
+def test_keeps_scalars_at_max_depth():
+    """純量的 key 在上一層已經檢查過，截斷它只會讓紀錄失去用處。"""
+    event = redact_sensitive(None, "info", {"event": "x", "a": {"b": {"c": "plain"}}})
+
+    assert event["a"]["b"]["c"] == "plain"
+
+
 def test_keeps_none_for_absent_sensitive_field():
     """「沒有這個欄位」與「有但被遮蔽」是不同的資訊，不該被抹成同一種。"""
     event = redact_sensitive(None, "info", {"event": "x", "token": None})
