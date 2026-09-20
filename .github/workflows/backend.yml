@@ -53,9 +53,9 @@ jobs:
       CI_TEST_DB_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5432/easyfigma_ci_test
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
