@@ -1,0 +1,68 @@
+name: frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'env.d.ts'
+      - 'tsconfig*.json'
+      - 'vite.config.ts'
+      - 'vitest.config.ts'
+      - 'eslint.config.ts'
+      - '.oxlintrc.json'
+      - '.github/workflows/frontend.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'env.d.ts'
+      - 'tsconfig*.json'
+      - 'vite.config.ts'
+      - 'vitest.config.ts'
+      - 'eslint.config.ts'
+      - '.oxlintrc.json'
+      - '.github/workflows/frontend.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # 不帶 --fix：CI 只回報，不該在 runner 上偷偷改檔後判定通過
+      - name: Lint
+        run: npm run lint:ci
+
+      # 不跑 npm run build：它用 run-p 平行跑 type-check 與 build-only，
+      # 失敗時兩邊輸出交錯，拆成兩步才看得出是哪一段紅
+      - name: Type check
+        run: npm run type-check
+
+      - name: Unit tests
+        run: npx vitest run
+
+      - name: Build
+        run: npm run build-only
