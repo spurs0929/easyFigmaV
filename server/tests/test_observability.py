@@ -12,7 +12,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route
 
-from app.core.logging import redact_sensitive
+from app.core.logging import add_client_ip, bind_client_ip, redact_sensitive
 from app.core.request_context import RequestContextMiddleware, resolve_request_id
 from app.core.sentry import scrub_event
 
@@ -96,7 +96,9 @@ async def test_request_log_has_context_and_no_credentials(client, caplog):
     assert entry["path"] == "/api/auth/me"
     assert entry["status"] == 401
     assert entry["request_id"]
-    assert entry["client_ip"]
+    # client_ip 不在這裡：record.msg 正是 Sentry 會 repr() 出去的東西，
+    # 它要由 format-time 的 processor 補，見下面兩個測試。
+    assert "client_ip" not in entry
 
     # header 一律不進 log，所以整筆紀錄裡不該出現那個 token
     assert "not-a-real-token" not in str(entry)
@@ -128,6 +130,61 @@ async def test_failed_request_logs_error_type_only(caplog):
     assert failed[0]["request_id"]
     # 例外訊息不進紀錄；traceback 由 uvicorn 那一筆負責
     assert "使用者資料" not in str(failed[0])
+
+
+
+# ─────────────────────────── client_ip ───────────────────────────
+
+
+def _processor_formatter() -> structlog.stdlib.ProcessorFormatter:
+    """取出實際掛在 root handler 上的 formatter。
+
+    不自己組一個：這裡要驗的是正式設定下的輸出，自己組會驗到測試自己的設定。
+    pytest 另外掛了自己的 handler，所以用 formatter 的型別找而不是取 handlers[0]。
+    """
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler.formatter, structlog.stdlib.ProcessorFormatter):
+            return handler.formatter
+    raise AssertionError("root logger 上沒有 ProcessorFormatter，configure_logging 沒跑到")
+
+
+def test_add_client_ip_injects_current_value():
+    bind_client_ip("203.0.113.9")
+    try:
+        event = add_client_ip(None, "info", {"event": "x"})
+    finally:
+        bind_client_ip(None)
+
+    assert event["client_ip"] == "203.0.113.9"
+
+
+def test_add_client_ip_is_none_outside_a_request():
+    bind_client_ip(None)
+
+    assert add_client_ip(None, "info", {"event": "x"})["client_ip"] is None
+
+
+def test_client_ip_reaches_stdout_but_not_the_record():
+    """兩件事要同時成立：Render 的 log 看得到 IP，Sentry 的路徑看不到。"""
+    record = logging.LogRecord(
+        name="app.request",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="request_completed",
+        args=(),
+        exc_info=None,
+    )
+
+    bind_client_ip("203.0.113.9")
+    try:
+        rendered = _processor_formatter().format(record)
+    finally:
+        bind_client_ip(None)
+
+    assert "203.0.113.9" in rendered
+    # format 不能回頭改到 record 本身，否則 Sentry 還是拿得到
+    assert "203.0.113.9" not in str(record.msg)
 
 
 # ─────────────────────────── 遮蔽 ───────────────────────────
@@ -239,3 +296,47 @@ def test_scrub_event_tags_request_id():
         structlog.contextvars.clear_contextvars()
 
     assert event["tags"]["request_id"] == "abc123def456"
+
+
+def test_scrub_event_removes_forwarded_ip_headers():
+    """Cloudflare 與 Akamai 的 header 不在 SDK 的內建清單裡。"""
+    event = scrub_event(
+        {
+            "request": {
+                "headers": {
+                    "Cf-Connecting-Ip": "203.0.113.9",
+                    "True-Client-Ip": "203.0.113.9",
+                    "X-Forwarded-For": "203.0.113.9, 10.0.0.1",
+                    "X-Real-Ip": "203.0.113.9",
+                    "User-Agent": "pytest",
+                }
+            }
+        },
+        {},
+    )
+
+    assert list(event["request"]["headers"]) == ["User-Agent"]
+
+
+def test_scrub_event_redacts_ip_in_log_message():
+    """canary：正常情況不該命中，命中就要留下痕跡。"""
+    event = scrub_event(
+        {"logentry": {"message": "{'event': 'request_completed', 'client_ip': '203.0.113.9'}"}},
+        {},
+    )
+
+    assert "203.0.113.9" not in event["logentry"]["message"]
+    assert "[ip-redacted]" in event["logentry"]["message"]
+    assert event["tags"]["ip_scrub"] == "hit"
+
+
+def test_scrub_event_leaves_clean_message_untagged():
+    """時戳與耗時不能被誤判成 IP，否則 canary 永遠是紅的。"""
+    message = (
+        "{'event': 'request_completed', "
+        "'timestamp': '2026-09-21T10:11:12.345Z', 'duration_ms': 12.34}"
+    )
+    event = scrub_event({"logentry": {"message": message}}, {})
+
+    assert event["logentry"]["message"] == message
+    assert "tags" not in event

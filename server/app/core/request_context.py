@@ -11,6 +11,9 @@
 
 會記的是 request_id / method / path / client_ip / status / duration_ms。
 path 含 project UUID，那是資源識別碼不是憑證，保留它才追得到單一請求。
+
+client_ip 只出現在 stdout 的輸出，不會進到 Sentry 的事件內容——它由
+`app/core/logging.py` 的 format-time processor 注入，原因見該檔案。
 """
 
 import re
@@ -20,7 +23,7 @@ import uuid
 import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.core.logging import get_logger
+from app.core.logging import bind_client_ip, get_logger
 
 logger = get_logger("app.request")
 
@@ -77,10 +80,13 @@ class RequestContextMiddleware:
             request_id=request_id,
             method=scope.get("method", ""),
             path=path,
-            # uvicorn 的 --proxy-headers 已經把 scope["client"] 換成真實來源 IP，
-            # 少了那個參數這裡會是 Render 反向代理的位址。
-            client_ip=client[0] if client else None,
         )
+        # client_ip 走獨立的 ContextVar，理由見 app/core/logging.py：走 structlog 的
+        # contextvars 會讓它一起進到 Sentry 的事件內容裡。
+        #
+        # uvicorn 的 --proxy-headers 已經把 scope["client"] 換成真實來源 IP，
+        # 少了那個參數這裡會是 Render 反向代理的位址。
+        bind_client_ip(client[0] if client else None)
 
         started = time.perf_counter()
         status: int | None = None

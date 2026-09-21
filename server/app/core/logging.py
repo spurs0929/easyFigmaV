@@ -15,11 +15,36 @@
 輪替與保存交給平台（Render 收集 stdout）。
 """
 
+import contextvars
 import logging
 import sys
 from typing import Any
 
 import structlog
+
+# client_ip 刻意不走 structlog 的 contextvars。
+#
+# `merge_contextvars` 屬於「log 時」的 chain，它併進來的欄位會進到 event dict，
+# 而 event dict 就是 stdlib record 的 msg——Sentry 的 LoggingIntegration 會把那個
+# dict `repr()` 成字串送出去。也就是說只要 client_ip 在 log 時就被併進來，它一定
+# 會一起到 Sentry，`before_send` 也救不了（到那裡已經是字串，key 名稱比對的遮蔽
+# processor 用不上）。
+#
+# 改成自己的 ContextVar，由下面的 `add_client_ip` 在「format 時」注入。format-time
+# chain 只在 stdout 的 handler 執行，不會寫回 record.msg，所以 Render 的 log 看得到
+# client_ip，Sentry 看不到。
+_client_ip: contextvars.ContextVar[str | None] = contextvars.ContextVar("client_ip", default=None)
+
+
+def bind_client_ip(value: str | None) -> None:
+    """設定目前請求的 client_ip。每個請求進來時都要呼叫（含 None）以隔離上一個請求。"""
+    _client_ip.set(value)
+
+
+def add_client_ip(_logger: Any, _method: str, event_dict: dict) -> dict:
+    """format-time processor：把 client_ip 補回輸出，但不寫進 record.msg。"""
+    event_dict["client_ip"] = _client_ip.get()
+    return event_dict
 
 # key 名稱只要「包含」這些字串就遮蔽。用子字串比對而不是完全比對，
 # 是因為真正會出事的是 access_token / refresh_token_pepper / password_hash
@@ -121,6 +146,8 @@ def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
         foreign_pre_chain=[*shared_processors, structlog.stdlib.ExtraAdder()],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            # 只在這條 chain 加 client_ip：這裡的輸出只會進 stdout handler。
+            add_client_ip,
             *renderers,
         ],
     )
