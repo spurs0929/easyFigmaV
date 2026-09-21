@@ -141,11 +141,12 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
+from app.core.ratelimit import auth_limiter  # noqa: E402
 from app.core.security import create_access_token, hash_password_sync  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Project, User  # noqa: E402
+from app.models import Project, ProjectMember, User  # noqa: E402
 
 TEST_PASSWORD = "correct-horse-battery-staple"
 
@@ -265,6 +266,19 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter() -> Iterator[None]:
+    """限流器的狀態在記憶體裡，不歸零就會跨測試累積。
+
+    邀請端點掛了 rate_limit("project_invite")，而授權矩陣會在同一個 session 裡
+    重複打那支端點。不清掉的話，測試會從某一筆開始莫名其妙收到 429——而且順序
+    一換，失敗的就換成另一筆。
+    """
+    auth_limiter._hits.clear()
+    yield
+    auth_limiter._hits.clear()
+
+
 @pytest_asyncio.fixture
 async def make_user(db_session: AsyncSession) -> Callable[..., Awaitable[User]]:
     """建立使用者。
@@ -275,7 +289,9 @@ async def make_user(db_session: AsyncSession) -> Callable[..., Awaitable[User]]:
 
     async def _make(email: str | None = None) -> User:
         user = User(
-            email=email or f"{uuid.uuid4().hex}@example.test",
+            # 用 example.com 而不是 example.test：邀請端點的輸入是 EmailStr，
+            # 而 email-validator 會拒絕 .test 這類保留用途的 TLD。
+            email=email or f"{uuid.uuid4().hex}@example.com",
             password_hash=hash_password_sync(TEST_PASSWORD),
         )
         db_session.add(user)
@@ -294,6 +310,23 @@ async def make_project(db_session: AsyncSession) -> Callable[..., Awaitable[Proj
         # document_version 是 server_default，flush 之後 Python 端還是空的
         await db_session.refresh(project)
         return project
+
+    return _make
+
+
+@pytest_asyncio.fixture
+async def make_member(db_session: AsyncSession) -> Callable[..., Awaitable[ProjectMember]]:
+    """把一個使用者加進專案。
+
+    不走 POST /members：那支端點需要 owner 的 token 與速率限制額度，而大部分測試
+    只是要一個「已經是成員」的初始狀態，不是要測邀請流程本身。
+    """
+
+    async def _make(project: Project, user: User) -> ProjectMember:
+        member = ProjectMember(project_id=project.id, user_id=user.id)
+        db_session.add(member)
+        await db_session.flush()
+        return member
 
     return _make
 

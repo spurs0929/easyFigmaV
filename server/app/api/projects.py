@@ -1,14 +1,22 @@
 import uuid
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import load_only
 
-from app.api.deps import CurrentUser, DbSession, ensure_document_size
+from app.api.deps import (
+    AccessibleProject,
+    AccessibleProjectWithDocument,
+    CurrentUser,
+    DbSession,
+    ensure_document_size,
+    not_project_owner,
+    project_access,
+    project_not_found,
+)
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.models import Project
+from app.models import Project, ProjectMember
 from app.schemas.project import (
     DocumentSaved,
     DocumentUpdate,
@@ -22,14 +30,6 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 logger = get_logger(__name__)
 
-def _not_found() -> HTTPException:
-    """每次建立新的實例。
-
-    Exception 被 raise 時會綁上 traceback，共用同一個 module 層級的實例
-    等於讓並行的請求互相覆寫彼此的狀態。
-    """
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到專案")
-
 # 列表用的欄位。document 不在裡面——那可能是幾百 KB，列表不需要，
 # 而且用 load_only 是為了連「從資料庫撈出來」都省掉，不只是不回傳。
 _SUMMARY_COLUMNS = (
@@ -41,39 +41,18 @@ _SUMMARY_COLUMNS = (
 )
 
 
-def owned_project(*, with_document: bool = False):
-    """取得屬於目前使用者的專案，否則 404。
-
-    「不存在」與「不屬於你」都回 404：403 會洩漏「這個 UUID 對應的專案存在，
-    只是不屬於你」。UUID 難猜，但沒必要提供這個資訊。
-
-    之後加入 project_members 時，把這裡換成 owner OR member 的判斷即可，
-    端點簽章完全不用動——這就是現在先抽成 dependency 的價值。
-    """
-
-    async def dependency(project_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Project:
-        stmt = select(Project).where(Project.id == project_id, Project.owner_id == user.id)
-        if not with_document:
-            stmt = stmt.options(load_only(*_SUMMARY_COLUMNS))
-
-        project = await db.scalar(stmt)
-        if project is None:
-            raise _not_found()
-        return project
-
-    return dependency
-
-
-OwnedProject = Annotated[Project, Depends(owned_project())]
-OwnedProjectWithDocument = Annotated[Project, Depends(owned_project(with_document=True))]
-
-
 @router.get("", response_model=list[ProjectSummary])
 async def list_projects(user: CurrentUser, db: DbSession) -> list[Project]:
+    """自己擁有的，加上被邀請加入的。
+
+    條件用 project_access() 而不是在這裡另外寫一次 OR：列表看得到的專案集合，
+    必須與單筆端點放行的集合完全相同，否則會出現「列表看得到但打不開」
+    或更糟的「列表看不到但打得開」。
+    """
     rows = await db.scalars(
         select(Project)
         .options(load_only(*_SUMMARY_COLUMNS))
-        .where(Project.owner_id == user.id)
+        .where(project_access(user.id))
         .order_by(Project.updated_at.desc())
         .limit(settings.max_projects_per_page)
     )
@@ -95,19 +74,22 @@ async def create_project(payload: ProjectCreate, user: CurrentUser, db: DbSessio
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
-async def get_project(project: OwnedProjectWithDocument) -> Project:
+async def get_project(project: AccessibleProjectWithDocument) -> Project:
     return project
 
 
 @router.patch("/{project_id}", response_model=ProjectSummary)
 async def rename_project(
-    payload: ProjectRename, project: OwnedProject, db: DbSession
+    payload: ProjectRename, project: AccessibleProject, db: DbSession
 ) -> ProjectSummary:
-    """改名。
+    """改名。member 也可以——改名屬於 edit，不是 owner-only 的管理操作。
 
     用 UPDATE ... RETURNING 而不是改屬性再 commit + refresh：refresh() 會重新
     載入實例的欄位，而 document 是 deferred 的，意圖上不該在改名路徑被碰到。
     直接指定要回傳的欄位，SQL 就不可能把它撈回來。
+
+    授權已經由 dependency 完成，所以這裡的 WHERE 只需要主鍵——條件寫兩次
+    反而會讓人以為這裡也是授權點。
 
     updated_at 必須明確帶上：server_default=now() 只作用於 INSERT，
     UPDATE 不會自動更新，漏了的話列表的「最近修改」排序會停在建立時間，
@@ -139,14 +121,18 @@ async def save_document(
     user: CurrentUser,
     db: DbSession,
 ) -> DocumentSaved:
-    """儲存畫布內容，以 compare-and-set 實作樂觀鎖。
+    """儲存畫布內容，以 compare-and-set 實作樂觀鎖。member 也可以存檔。
 
-    這支刻意不用 owned_project dependency：一來授權條件已經在 UPDATE 的
+    這支刻意不用 accessible_project dependency：一來授權條件已經在 UPDATE 的
     WHERE 裡，二來 dependency 會先把舊的 document 從資料庫撈出來，而這條
     路徑正要覆蓋它，撈出來純屬浪費。
 
     版本比對必須放進 UPDATE 本身。先讀出來、比對、再寫回的話，兩個並行請求
     可能都通過比對，後寫的那個會覆蓋掉前一個，樂觀鎖形同虛設。
+
+    ⚠️ 授權條件在這支端點出現兩次：CAS 的 UPDATE 與底下判別 404/409 的查詢。
+    兩處都必須是 project_access()，只改一處的話，第二個查詢就會用比較寬鬆
+    （或比較嚴格）的條件回答「這個專案存在嗎」，狀態碼會開始說謊。
     """
     ensure_document_size(payload.document)
 
@@ -154,7 +140,7 @@ async def save_document(
         update(Project)
         .where(
             Project.id == project_id,
-            Project.owner_id == user.id,
+            project_access(user.id),
             Project.document_version == payload.document_version,
         )
         .values(
@@ -167,17 +153,17 @@ async def save_document(
     row = result.first()
 
     if row is None:
-        # 沒更新到任何列有兩種原因，要分開回應：專案不存在 / 不屬於你 → 404，
+        # 沒更新到任何列有兩種原因，要分開回應：專案不存在 / 你沒有存取權 → 404，
         # 存在但版本不符 → 409。少了這個查詢，衝突會被誤報成 404。
         #
         # UPDATE 影響 0 列不是資料庫錯誤，transaction 仍可繼續查詢。
         current = await db.scalar(
             select(Project.document_version).where(
-                Project.id == project_id, Project.owner_id == user.id
+                Project.id == project_id, project_access(user.id)
             )
         )
         if current is None:
-            raise _not_found()
+            raise project_not_found()
         # 樂觀鎖衝突是正常流程的一部分，不是錯誤；記成 info 是為了量測——
         # 衝突頻率是判斷「單機持久化是否還夠用」的依據之一。
         logger.info(
@@ -197,11 +183,29 @@ async def save_document(
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(project_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
-    # 硬刪除。soft delete 要在每個查詢加 deleted_at IS NULL，漏一個就是
-    # 別人刪掉的專案還查得到；沒有垃圾桶需求就不製造那個狀態。
+    """只有 owner 能刪。
+
+    硬刪除。soft delete 要在每個查詢加 deleted_at IS NULL，漏一個就是
+    別人刪掉的專案還查得到；沒有垃圾桶需求就不製造那個狀態。
+
+    成員一併消失：project_members 的外鍵是 ON DELETE CASCADE。
+    """
     result = await db.execute(
         delete(Project).where(Project.id == project_id, Project.owner_id == user.id)
     )
     if result.rowcount == 0:
-        raise _not_found()
+        # 刪不到有兩種可能：不是你的，或根本不存在。要分辨的只有「你是不是這個
+        # 專案的 member」——member 本來就看得到這個專案，對他回 403 沒有洩漏。
+        #
+        # ⚠️ 這裡刻意只查 project_members，不查 projects 是否存在。若改成
+        # 「專案存在 → 403」，任何人都能拿這支端點逐一測試 UUID 是否對應到
+        # 真實專案，反列舉的 404 設計就白做了。
+        is_member = await db.scalar(
+            select(1).where(
+                ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
+            )
+        )
+        if is_member:
+            raise not_project_owner()
+        raise project_not_found()
     await db.commit()

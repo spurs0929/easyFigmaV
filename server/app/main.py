@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
+from app.api.members import router as members_router
 from app.api.projects import router as projects_router
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import settings
@@ -57,3 +58,4 @@ app.include_router(health_router)
 # /health 維持在根路徑，Render 的健康檢查指向那裡。
 app.include_router(auth_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
+app.include_router(members_router, prefix="/api")
