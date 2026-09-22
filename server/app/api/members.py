@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import AccessibleProject, DbSession, OwnerProject, rate_limit
+from app.api.deps import AccessibleProject, DbSession, OwnerProject, project_role, rate_limit
 from app.models import Project, ProjectMember, User
 from app.schemas.member import MemberInvite, ProjectMemberOut
 
@@ -16,7 +16,7 @@ def _as_member(user: User, project: Project) -> ProjectMemberOut:
         user_id=user.id,
         email=user.email,
         display_name=user.display_name,
-        role="owner" if user.id == project.owner_id else "member",
+        role=project_role(project.owner_id, user.id),
     )
 
 

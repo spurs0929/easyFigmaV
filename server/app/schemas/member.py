@@ -1,7 +1,8 @@
 import uuid
-from typing import Literal
 
 from pydantic import BaseModel, EmailStr, field_validator
+
+from app.schemas.project import ProjectRole
 
 
 class MemberInvite(BaseModel):
@@ -33,4 +34,4 @@ class ProjectMemberOut(BaseModel):
     # 從一筆奇怪的紀錄變成一支 500。
     email: str
     display_name: str | None
-    role: Literal["owner", "member"]
+    role: ProjectRole

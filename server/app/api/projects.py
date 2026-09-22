@@ -1,8 +1,8 @@
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.orm import load_only
 
 from app.api.deps import (
     AccessibleProject,
@@ -13,6 +13,7 @@ from app.api.deps import (
     not_project_owner,
     project_access,
     project_not_found,
+    project_role,
 )
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -30,10 +31,13 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 logger = get_logger(__name__)
 
-# 列表用的欄位。document 不在裡面——那可能是幾百 KB，列表不需要，
-# 而且用 load_only 是為了連「從資料庫撈出來」都省掉，不只是不回傳。
+# 列表與改名共用的欄位。直接指定欄位而不是撈整個 entity，是為了連「把 document
+# 從資料庫拿出來」都省掉——它可能是幾百 KB，而這兩條路徑都用不到它。
 _SUMMARY_COLUMNS = (
     Project.id,
+    # role 的來源。它不會出現在回應裡，但推導 role 需要它，而多讀一個 UUID 欄位
+    # 跟 document 完全不是同一個量級。
+    Project.owner_id,
     Project.name,
     Project.document_version,
     Project.created_at,
@@ -41,22 +45,47 @@ _SUMMARY_COLUMNS = (
 )
 
 
+def _summary(row: Any, user_id: uuid.UUID) -> ProjectSummary:
+    """把一列專案資料組成回應。
+
+    row 可以是 _SUMMARY_COLUMNS 查出來的 Row，也可以是 Project 實例——兩者的欄位
+    存取方式相同，所以列表、改名、單筆都走同一個組裝點，role 才不會有某條路徑忘了帶。
+
+    不用 model_validate(row)：role 不在資料列裡，它要由 user_id 推導。
+    """
+    return ProjectSummary(
+        id=row.id,
+        name=row.name,
+        document_version=row.document_version,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        role=project_role(row.owner_id, user_id),
+    )
+
+
+def _detail(project: Project, user_id: uuid.UUID) -> ProjectDetail:
+    return ProjectDetail(**_summary(project, user_id).model_dump(), document=project.document)
+
+
 @router.get("", response_model=list[ProjectSummary])
-async def list_projects(user: CurrentUser, db: DbSession) -> list[Project]:
+async def list_projects(user: CurrentUser, db: DbSession) -> list[ProjectSummary]:
     """自己擁有的，加上被邀請加入的。
 
     條件用 project_access() 而不是在這裡另外寫一次 OR：列表看得到的專案集合，
     必須與單筆端點放行的集合完全相同，否則會出現「列表看得到但打不開」
     或更糟的「列表看不到但打得開」。
+
+    每一列都帶 role，前端才分得出「我的」與「參與中」。用 owner_id 在 Python 端
+    推導而不是在 SQL 裡寫 CASE：推導只有一份（project_role()），SQL 與 Python
+    兩套寫法遲早會走散。
     """
-    rows = await db.scalars(
-        select(Project)
-        .options(load_only(*_SUMMARY_COLUMNS))
+    rows = await db.execute(
+        select(*_SUMMARY_COLUMNS)
         .where(project_access(user.id))
         .order_by(Project.updated_at.desc())
         .limit(settings.max_projects_per_page)
     )
-    return list(rows)
+    return [_summary(row, user.id) for row in rows]
 
 
 @router.post(
@@ -64,23 +93,24 @@ async def list_projects(user: CurrentUser, db: DbSession) -> list[Project]:
     response_model=ProjectDetail,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_project(payload: ProjectCreate, user: CurrentUser, db: DbSession) -> Project:
+async def create_project(payload: ProjectCreate, user: CurrentUser, db: DbSession) -> ProjectDetail:
     ensure_document_size(payload.document)
     project = Project(owner_id=user.id, name=payload.name, document=payload.document)
     db.add(project)
     await db.commit()
     await db.refresh(project)
-    return project
+    # 建立者必然是 owner，但仍走同一個推導，不寫死字串。
+    return _detail(project, user.id)
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
-async def get_project(project: AccessibleProjectWithDocument) -> Project:
-    return project
+async def get_project(project: AccessibleProjectWithDocument, user: CurrentUser) -> ProjectDetail:
+    return _detail(project, user.id)
 
 
 @router.patch("/{project_id}", response_model=ProjectSummary)
 async def rename_project(
-    payload: ProjectRename, project: AccessibleProject, db: DbSession
+    payload: ProjectRename, project: AccessibleProject, user: CurrentUser, db: DbSession
 ) -> ProjectSummary:
     """改名。member 也可以——改名屬於 edit，不是 owner-only 的管理操作。
 
@@ -108,7 +138,9 @@ async def rename_project(
         )
     ).one()
     await db.commit()
-    return ProjectSummary.model_validate(row)
+    # 回傳的是 summary，前端會拿它直接替換列表裡的那一筆，所以 role 必須跟著回去，
+    # 而且必須是「這個請求者的」role，不是永遠 owner。
+    return _summary(row, user.id)
 
 
 @router.put(

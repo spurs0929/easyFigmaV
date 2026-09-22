@@ -12,6 +12,7 @@ from app.core.ratelimit import auth_limiter, client_key
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.models import Project, ProjectMember, User
+from app.schemas.project import ProjectRole
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
@@ -81,6 +82,19 @@ def project_access(user_id: uuid.UUID) -> ColumnElement[bool]:
         .correlate(Project)
         .exists(),
     )
+
+
+def project_role(owner_id: uuid.UUID, user_id: uuid.UUID) -> ProjectRole:
+    """回應上的 role。推導出來的，不是欄位。
+
+    跟 project_access() 放在一起是刻意的：兩者依據的是同一個真相
+    （projects.owner_id）。誰要是在別的模組自己再推一次，遲早會出現「回應說你是
+    owner、授權卻判定你是 member」這種兩邊說法不一致的狀態。
+
+    ⚠️ 這個值只決定前端顯示什麼，不是授權依據。授權一律由端點自己的 dependency
+    判斷，客戶端看到什麼 role 都不影響。
+    """
+    return "owner" if owner_id == user_id else "member"
 
 
 def project_not_found() -> HTTPException:

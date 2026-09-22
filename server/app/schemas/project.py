@@ -1,8 +1,12 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# 資料庫裡沒有這個型別對應的欄位。owner 的真相是 projects.owner_id，其餘出現在
+# project_members 的都是 member；role 只是回應上的投影。
+ProjectRole = Literal["owner", "member"]
 
 
 class ProjectSummary(BaseModel):
@@ -15,6 +19,16 @@ class ProjectSummary(BaseModel):
     document_version: int
     created_at: datetime
     updated_at: datetime
+
+    # 相對於發出請求的人，不是專案的屬性：同一個專案，owner 看到 "owner"，
+    # 被邀請的人看到 "member"。前端靠它區分「我的 / 參與中」並決定刪除與成員
+    # 管理入口的可見性。
+    #
+    # ⚠️ 這是 UI 提示，不是授權。後端每支端點仍各自判斷權限，前端拿到什麼
+    # role 都不影響——把它當成授權依據就是把判斷交給了客戶端。
+    #
+    # 刻意不回傳 owner_id：前端只需要知道「是不是我」，不需要知道是誰。
+    role: ProjectRole
 
 
 class ProjectDetail(ProjectSummary):
@@ -35,7 +49,6 @@ class ProjectCreate(BaseModel):
         return name
 
 
-
 class ProjectRename(BaseModel):
     name: str = Field(max_length=120)
 
@@ -53,7 +66,6 @@ class DocumentUpdate(BaseModel):
 
     document_version: int = Field(ge=1)
     document: dict[str, Any]
-
 
 
 class DocumentSaved(BaseModel):

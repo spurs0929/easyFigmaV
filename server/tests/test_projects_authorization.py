@@ -328,3 +328,78 @@ async def test_list_does_not_duplicate_owned_projects(
 async def test_list_requires_authentication(client):
     response = await client.get("/api/projects")
     assert response.status_code == 401
+
+
+# ── role 是相對於請求者的推導值 ───────────────────────────────────────────
+#
+# role 只給前端決定顯示什麼用（「我的 / 參與中」、要不要出現刪除與成員管理入口），
+# 不是授權依據——授權由端點自己的 dependency 判斷，上面的矩陣才是權威。
+# 這一組釘住的是「每條回傳 summary 的路徑都帶了 role，而且帶的是這個請求者的」。
+
+
+async def test_list_marks_owned_and_joined_projects(
+    client, make_user, make_project, make_member, auth
+):
+    user = await make_user()
+    other = await make_user()
+    mine = await make_project(user, name="我的")
+    joined = await make_project(other, name="我被邀請的")
+    await make_member(joined, user)
+
+    response = await client.get("/api/projects", headers=auth(user))
+
+    assert response.status_code == 200
+    assert {p["id"]: p["role"] for p in response.json()} == {
+        str(mine.id): "owner",
+        str(joined.id): "member",
+    }
+
+
+async def test_role_differs_per_viewer(client, make_user, make_project, make_member, auth):
+    """同一個專案，兩個人看到的 role 不同。
+
+    順便釘住 owner_id 不進回應：它是為了推導 role 才被查出來的，前端只需要知道
+    「是不是我」，不需要知道是誰。
+    """
+    owner = await make_user()
+    member = await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    as_owner = await client.get(f"/api/projects/{project.id}", headers=auth(owner))
+    as_member = await client.get(f"/api/projects/{project.id}", headers=auth(member))
+
+    assert as_owner.json()["role"] == "owner"
+    assert as_member.json()["role"] == "member"
+    assert "owner_id" not in as_member.json()
+
+
+async def test_rename_response_keeps_the_caller_role(
+    client, make_user, make_project, make_member, auth
+):
+    """改名回的 summary 會被前端拿去替換列表裡的那一筆。
+
+    這裡若漏掉 role 或永遠回 owner，member 改個名字，列表上就會長出一顆刪除按鈕。
+    """
+    owner = await make_user()
+    member = await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    response = await client.patch(
+        f"/api/projects/{project.id}", json={"name": "改名後"}, headers=auth(member)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "member"
+
+
+async def test_created_project_is_owned_by_its_creator(client, make_user, auth):
+    user = await make_user()
+
+    response = await client.post(
+        "/api/projects", json={"name": "新專案", "document": EMPTY_DOCUMENT}, headers=auth(user)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["role"] == "owner"
