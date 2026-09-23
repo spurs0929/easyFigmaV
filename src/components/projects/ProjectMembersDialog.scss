@@ -1,0 +1,58 @@
+.members-invite {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.members-hint,
+.members-state {
+  margin: 8px 0 0;
+  color: #8a8a8a;
+  font-size: 12px;
+}
+
+.members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  list-style: none;
+}
+
+.members-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  background: #1b1b1b;
+}
+
+.members-identity {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.members-email {
+  overflow: hidden;
+  color: #f0f0f0;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.members-name {
+  color: #6a6a6a;
+  font-size: 12px;
+}
+
+.members-role {
+  flex-shrink: 0;
+  color: #8a8a8a;
+  font-size: 12px;
+}

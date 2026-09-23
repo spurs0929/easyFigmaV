@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import ProjectMembersDialog from '@/components/projects/ProjectMembersDialog.vue'
 import { useAuthStore } from '@/store/auth'
 import { useProjectsStore } from '@/store/projects'
 import type { ProjectSummary } from '@/services/projects'
@@ -16,6 +17,7 @@ const projects = useProjectsStore()
 const renaming = ref<ProjectSummary | null>(null)
 const renameInput = ref('')
 const deleting = ref<ProjectSummary | null>(null)
+const managingMembers = ref<ProjectSummary | null>(null)
 
 onMounted(() => {
   projects.clearError()
@@ -61,7 +63,7 @@ async function confirmDelete(): Promise<void> {
   <div class="projects">
     <header class="projects-header">
       <div>
-        <h1>我的專案</h1>
+        <h1>專案</h1>
         <p class="projects-user">{{ auth.displayName }}</p>
       </div>
       <Button label="回到編輯器" text size="small" @click="router.push('/')" />
@@ -80,7 +82,11 @@ async function confirmDelete(): Promise<void> {
     <ul v-else class="projects-list">
       <li v-for="project in projects.items" :key="project.id" class="projects-item">
         <button class="projects-open" type="button" @click="openProject(project)">
-          <span class="projects-name">{{ project.name }}</span>
+          <span class="projects-name">
+            {{ project.name }}
+            <!-- 只標示參與中：自己的專案是常態，不需要每一列都掛一個標籤。 -->
+            <span v-if="project.role === 'member'" class="projects-badge">參與中</span>
+          </span>
           <span class="projects-meta">
             版本 {{ project.document_version }}・{{ formatTime(project.updated_at) }}
           </span>
@@ -88,10 +94,21 @@ async function confirmDelete(): Promise<void> {
 
         <div class="projects-actions">
           <Button label="重新命名" text size="small" @click="startRename(project)" />
-          <Button label="刪除" text severity="danger" size="small" @click="deleting = project" />
+          <Button label="成員" text size="small" @click="managingMembers = project" />
+          <!-- 只有擁有者能刪除。藏起來是為了不讓人誤按，權限仍由後端判斷（非 owner 會拿到 403）。 -->
+          <Button
+            v-if="project.role === 'owner'"
+            label="刪除"
+            text
+            severity="danger"
+            size="small"
+            @click="deleting = project"
+          />
         </div>
       </li>
     </ul>
+
+    <ProjectMembersDialog :project="managingMembers" @close="managingMembers = null" />
 
     <Dialog
       :visible="renaming !== null"
