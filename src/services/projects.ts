@@ -9,12 +9,22 @@ import { apiFetch } from '@/services/api'
  */
 export type ProjectDocument = Record<string, unknown>
 
+/**
+ * 相對於目前登入者的角色，不是專案的屬性：同一個專案，建立者拿到 'owner'，
+ * 被邀請的人拿到 'member'。後端由 projects.owner_id 推導，資料庫沒有這個欄位。
+ *
+ * ⚠️ 只用來決定 UI 顯示什麼。權限是後端每支端點各自判斷的，前端藏起刪除按鈕
+ * 只是不讓人誤按，不是安全機制。
+ */
+export type ProjectRole = 'owner' | 'member'
+
 export interface ProjectSummary {
   id: string
   name: string
   document_version: number
   created_at: string
   updated_at: string
+  role: ProjectRole
 }
 
 export interface ProjectDetail extends ProjectSummary {

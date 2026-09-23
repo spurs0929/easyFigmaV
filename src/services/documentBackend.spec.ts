@@ -48,6 +48,7 @@ async function loadedBackend(startVersion = 1) {
     document_version: startVersion,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    role: 'owner',
     document: snapshot(0) as unknown as Record<string, unknown>,
   })
   const backend = createCloudDocumentBackend(PROJECT_ID)
@@ -123,6 +124,7 @@ describe('createCloudDocumentBackend', () => {
       document_version: 7,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      role: 'owner',
       document: snapshot(0) as unknown as Record<string, unknown>,
     })
     await backend.load()
