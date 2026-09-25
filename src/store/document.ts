@@ -265,12 +265,27 @@ export const useDocumentStore = defineStore('document', () => {
     // 離開前把待存的變更送出去。persistNow 進去第一件事就是清掉 timer，
     // 而它在第一個 await 之前就讀完 _backend，所以下面把 _backend 換回本機
     // 不影響這一次存檔。
+    const leavingCloud = _backend.kind === 'cloud'
     _generation += 1
     flushPendingSave()
     _watchStop?.()
     _watchStop = null
     _unbindLifecycle?.()
     _unbindLifecycle = null
+
+    // 離開雲端專案時清空畫布。element / comment store 是整個 SPA 共用的，
+    // 不清的話回到 `/` 時雲端內容還在 store 裡：本機沒有草稿就會被
+    // startPersistence 當成初始內容存進 IndexedDB，之後登出、甚至換人使用
+    // 這台電腦都還看得到。
+    //
+    // 必須排在 flushPendingSave 之後：persistNow 在第一個 await 之前就已經
+    // 同步 buildSnapshot 完，清空不影響那次存檔；反過來就會把空文件存回雲端。
+    // watcher 也已經停掉，清空觸發的 documentRevision 不會再排程 autosave。
+    if (leavingCloud) {
+      elementStore.loadSnapshot({ byId: {}, rootIds: [] })
+      // 空陣列時 comment store 會 removeItem，連帶清掉它自己寫進 localStorage 的雲端留言
+      commentStore.replaceAll([])
+    }
     _started = false
     _conflicted = false
     _backend = localDocumentBackend
