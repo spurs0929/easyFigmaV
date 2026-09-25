@@ -113,6 +113,7 @@ async function confirmDelete(): Promise<void> {
     <Dialog
       :visible="renaming !== null"
       modal
+      :draggable="false"
       header="重新命名"
       :style="{ width: 'min(360px, 92vw)' }"
       @update:visible="renaming = null"

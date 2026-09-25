@@ -48,6 +48,7 @@ function remove(member: ProjectMember): void {
   <Dialog
     :visible="project !== null"
     modal
+    :draggable="false"
     :header="`成員・${project?.name ?? ''}`"
     :style="{ width: 'min(420px, 92vw)' }"
     @update:visible="emit('close')"
