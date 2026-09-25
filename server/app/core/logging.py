@@ -46,6 +46,7 @@ def add_client_ip(_logger: Any, _method: str, event_dict: dict) -> dict:
     event_dict["client_ip"] = _client_ip.get()
     return event_dict
 
+
 # key 名稱只要「包含」這些字串就遮蔽。用子字串比對而不是完全比對，
 # 是因為真正會出事的是 access_token / refresh_token_pepper / password_hash
 # 這類組合字，逐一列舉一定會漏。

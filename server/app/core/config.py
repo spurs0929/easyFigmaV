@@ -160,9 +160,7 @@ class Settings(BaseSettings):
         params = dict(parse_qsl(parts.query))
 
         scheme = (
-            "postgresql+asyncpg"
-            if parts.scheme in ("postgres", "postgresql")
-            else parts.scheme
+            "postgresql+asyncpg" if parts.scheme in ("postgres", "postgresql") else parts.scheme
         )
         query = urlencode([(k, v) for k, v in parse_qsl(parts.query) if k not in _LIBPQ_ONLY])
         self.sqlalchemy_url = urlunsplit((scheme, parts.netloc, parts.path, query, parts.fragment))

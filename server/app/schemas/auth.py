@@ -48,6 +48,6 @@ class TokenResponse(BaseModel):
     """refresh token 不在這裡——它只走 httpOnly cookie，永遠不進 response body。"""
 
     access_token: str
-    token_type: str = "bearer" # noqa: S105
+    token_type: str = "bearer"  # noqa: S105
     expires_in: int  # 秒，給前端排程提前 refresh
     user: UserResponse

@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
     logger.info("app_stopped")
 
+
 app = FastAPI(title="easyFigmaV", version="0.1.0", lifespan=lifespan)
 
 # 必須早於路由：FastAPI 在解析 body 之後才執行 dependency，

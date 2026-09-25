@@ -30,9 +30,7 @@ class RefreshToken(Base):
         Index("ix_refresh_tokens_family_id_revoked_at", "family_id", "revoked_at"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         # 刪帳號時連同所有 session 一起消失，不留孤兒列
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -47,9 +45,7 @@ class RefreshToken(Base):
 
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # 整條 family 的絕對到期，輪替時原樣沿用。沒有它，持續輪替就能無限續命。
-    family_expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    family_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -83,9 +83,7 @@ def scrub_event(event: dict[str, Any], _hint: dict[str, Any]) -> dict[str, Any]:
         headers = request.get("headers")
         if isinstance(headers, dict):
             request["headers"] = {
-                key: value
-                for key, value in headers.items()
-                if key.lower() not in _STRIPPED_HEADERS
+                key: value for key, value in headers.items() if key.lower() not in _STRIPPED_HEADERS
             }
 
     if _scrub_ip_in_message(event):

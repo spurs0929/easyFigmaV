@@ -11,10 +11,12 @@ router = APIRouter(tags=["Health"])
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
+
 @router.get("/health")
 async def liveness():
     """確認程式是否存活。"""
-    return { "status": "ok", "environment": settings.environment }
+    return {"status": "ok", "environment": settings.environment}
+
 
 @router.get("/health/ready")
 async def readiness(response: Response, db: DbSession):

@@ -201,9 +201,7 @@ async def refresh(request: Request, response: Response, db: DbSession) -> TokenR
 
     now = datetime.now(UTC)
     token = await db.scalar(
-        select(RefreshToken).where(
-            RefreshToken.token_hash == security.hash_refresh_token(raw)
-        )
+        select(RefreshToken).where(RefreshToken.token_hash == security.hash_refresh_token(raw))
     )
 
     if token is None:
@@ -212,9 +210,7 @@ async def refresh(request: Request, response: Response, db: DbSession) -> TokenR
 
     if token.revoked_at is not None:
         grace = timedelta(seconds=settings.refresh_reuse_grace_seconds)
-        is_concurrent_tab = (
-            token.replaced_by_id is not None and now - token.revoked_at <= grace
-        )
+        is_concurrent_tab = token.replaced_by_id is not None and now - token.revoked_at <= grace
         if is_concurrent_tab:
             # 多分頁競態，不是攻擊。cookie 已經被上一個請求的 Set-Cookie 覆蓋，
             # 前端重試一次就會帶到新的值。
@@ -305,9 +301,7 @@ async def logout(request: Request, response: Response, db: DbSession) -> Respons
     raw = request.cookies.get(REFRESH_COOKIE_NAME)
     if raw:
         token = await db.scalar(
-            select(RefreshToken).where(
-                RefreshToken.token_hash == security.hash_refresh_token(raw)
-            )
+            select(RefreshToken).where(RefreshToken.token_hash == security.hash_refresh_token(raw))
         )
         if token is not None:
             await _revoke_family(db, token.family_id, reason="logout")

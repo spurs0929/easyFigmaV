@@ -132,7 +132,6 @@ async def test_failed_request_logs_error_type_only(caplog):
     assert "使用者資料" not in str(failed[0])
 
 
-
 # ─────────────────────────── client_ip ───────────────────────────
 
 

@@ -46,9 +46,7 @@ class Project(Base):
     # 這是 document 的修訂版本，不是整筆 row 的版本。改名稱不會遞增它——
     # 否則使用者在列表頁改個名字，開著的編輯器下次存檔就會收到 409，
     # 而實際上沒有任何人改過畫布內容。
-    document_version: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("1")
-    )
+    document_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
