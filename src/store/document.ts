@@ -226,6 +226,9 @@ export const useDocumentStore = defineStore('document', () => {
     _backend = backend
     backendKind.value = backend.kind
     persistenceAvailable.value = backend.available
+    // 必須在 load 之前：雲端 load 的 replaceAll 就會寫 localStorage。雲端期間任何
+    // 路徑（包含直接關分頁時的 lifecycle flush）都不能把雲端留言留在這台電腦上。
+    commentStore.setStorageMirror(backend.kind === 'local')
 
     const loaded = await loadPersistedDocument(backend, generation)
     // 第二道檢查。上面那道擋的是「套用內容」，這道擋的是「註冊資源」——
@@ -283,8 +286,11 @@ export const useDocumentStore = defineStore('document', () => {
     // watcher 也已經停掉，清空觸發的 documentRevision 不會再排程 autosave。
     if (leavingCloud) {
       elementStore.loadSnapshot({ byId: {}, rootIds: [] })
-      // 空陣列時 comment store 會 removeItem，連帶清掉它自己寫進 localStorage 的雲端留言
+      // mirror 此時仍是關閉的，所以清空不會寫 localStorage，本機原有的 mirror 不會被刪。
       commentStore.replaceAll([])
+      // 清空之後才恢復 mirror：恢復時 comment store 會從 localStorage 重新讀回本機留言，
+      // 讓 SPA 內回到 `/` 的狀態與重新整理後一致。順序反過來，雲端留言會被寫進 mirror。
+      commentStore.setStorageMirror(true)
     }
     _started = false
     _conflicted = false

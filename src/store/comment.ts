@@ -72,6 +72,12 @@ export const useCommentStore = defineStore('comment', () => {
   /** 評論的私有響應式陣列；外部透過 computed `comments` 存取唯讀快照。 */
   const _comments = ref<CanvasComment[]>(loadFromStorage())
   const _documentRevision = ref(0)
+  /**
+   * 是否把評論鏡像到 localStorage。只是一個開關，store 不知道開關的理由；
+   * 由 documentStore 依持久化目標決定（雲端專案期間關閉）。
+   * 刻意放在 store 內而非模組層級：重新建立的 store（HMR、新的 Pinia）一律從開啟開始。
+   */
+  let _storageMirrorEnabled = true
 
   /**
    * 對外公開的唯讀評論列表。
@@ -84,9 +90,26 @@ export const useCommentStore = defineStore('comment', () => {
     _documentRevision.value++
   }
 
-  /** 立即將當前評論陣列寫入 localStorage。 */
+  /**
+   * 立即將當前評論陣列寫入 localStorage。
+   * 這是唯一的寫入閘門：persist、頁面 lifecycle、CanvasArea unmount 都經過這裡。
+   */
   function flush(): void {
+    if (!_storageMirrorEnabled) return
     writeToStorage(_comments.value)
+  }
+
+  /**
+   * 開關 localStorage mirror。
+   *
+   * 關閉 → 開啟時從 localStorage 重新讀回評論：關閉期間 store 內容與 mirror 已經分岔，
+   * 只恢復開關的話，下一次 flush（切個分頁就會觸發）會拿 store 的內容覆蓋、甚至刪掉 mirror。
+   * 重新讀取不寫回 localStorage，也不 touchDocument——這是還原，不是一次編輯。
+   */
+  function setStorageMirror(enabled: boolean): void {
+    if (enabled === _storageMirrorEnabled) return
+    _storageMirrorEnabled = enabled
+    if (enabled) _comments.value = loadFromStorage()
   }
 
   /** 每次狀態變更後呼叫，確保資料同步持久化。 */
@@ -188,5 +211,6 @@ export const useCommentStore = defineStore('comment', () => {
     replaceAll,
     snapshot,
     flush,
+    setStorageMirror,
   }
 })

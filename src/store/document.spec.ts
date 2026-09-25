@@ -331,3 +331,151 @@ describe('cloud → local 切換不得把雲端文件寫進本機草稿', () => 
     expect(saved.comments).toHaveLength(2)
   })
 })
+
+const MIRROR_KEY = 'easyfigma_comments'
+
+/** 本機草稿原有的留言；進出雲端前後 localStorage mirror 都應該是它。 */
+const LOCAL_COMMENT = {
+  id: 'c-local',
+  worldX: 5,
+  worldY: 5,
+  text: 'local',
+  resolved: false,
+  createdAt: 100,
+}
+
+function seedLocalMirror(): string {
+  const raw = JSON.stringify([LOCAL_COMMENT])
+  localStorage.setItem(MIRROR_KEY, raw)
+  return raw
+}
+
+function mirrorIds(): string[] {
+  const raw = localStorage.getItem(MIRROR_KEY)
+  if (!raw) return []
+  return (JSON.parse(raw) as { id: string }[]).map((c) => c.id)
+}
+
+/** 模擬頁面卸載 / 切到背景：comment store 綁定的三個 lifecycle 事件都觸發一次。 */
+function fireUnloadLifecycle(): void {
+  window.dispatchEvent(new Event('beforeunload'))
+  window.dispatchEvent(new Event('pagehide'))
+  fireVisibilityHidden()
+}
+
+function fireVisibilityHidden(): void {
+  const original = Object.getOwnPropertyDescriptor(document, 'visibilityState')
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+  try {
+    document.dispatchEvent(new Event('visibilitychange'))
+  } finally {
+    if (original) Object.defineProperty(document, 'visibilityState', original)
+    else delete (document as { visibilityState?: unknown }).visibilityState
+  }
+}
+
+describe('雲端專案的留言不得寫入 comment store 的 localStorage mirror', () => {
+  it('雲端期間的留言變動不寫入 localStorage', async () => {
+    const seeded = seedLocalMirror()
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+
+    const added = commentStore.add(30, 30)
+    expect(localStorage.getItem(MIRROR_KEY)).toBe(seeded)
+    commentStore.updateText('c-cloud', 'edited')
+    expect(localStorage.getItem(MIRROR_KEY)).toBe(seeded)
+    commentStore.toggleResolved('c-cloud')
+    expect(localStorage.getItem(MIRROR_KEY)).toBe(seeded)
+    commentStore.remove(added.id)
+    expect(localStorage.getItem(MIRROR_KEY)).toBe(seeded)
+  })
+
+  it('雲端 load 不把雲端留言寫進 localStorage', async () => {
+    const seeded = seedLocalMirror()
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+
+    expect(commentStore.comments.map((c) => c.id)).toEqual(['c-cloud'])
+    expect(localStorage.getItem(MIRROR_KEY)).toBe(seeded)
+  })
+
+  it('雲端期間觸發卸載事件（直接關分頁）不把雲端留言寫進 localStorage', async () => {
+    const seeded = seedLocalMirror()
+    const documentStore = useDocumentStore()
+
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+    // 只驗證 lifecycle 這條寫入路徑：先把 mirror 還原成進入前的內容
+    localStorage.setItem(MIRROR_KEY, seeded)
+
+    fireUnloadLifecycle()
+
+    expect(mirrorIds()).not.toContain('c-cloud')
+    expect(localStorage.getItem(MIRROR_KEY)).toBe(seeded)
+  })
+
+  it('雲端 session 未經 stopPersistence 結束時，下一個 session 不會把雲端留言存進本機', async () => {
+    const documentStore = useDocumentStore()
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+    useCommentStore().add(40, 40)
+    fireUnloadLifecycle()
+
+    // 關分頁：stopPersistence 不會執行。新的 Pinia 模擬重新整理後開 `/`
+    setActivePinia(createPinia())
+    const nextComments = useCommentStore()
+    expect(nextComments.comments.some((c) => c.id === 'c-cloud')).toBe(false)
+
+    const local = fakeLocalBackend(null)
+    await useDocumentStore().startPersistence(local.backend)
+    await flush()
+
+    for (const [snapshot] of local.save.mock.calls) {
+      expect(containsCloudContent(snapshot)).toBe(false)
+      expect(snapshot.comments).toHaveLength(0)
+    }
+  })
+
+  it('本機模式仍然寫入 localStorage mirror', async () => {
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+
+    await documentStore.startPersistence(fakeLocalBackend(null).backend)
+    const added = commentStore.add(50, 50)
+
+    expect(mirrorIds()).toEqual([added.id])
+  })
+
+  it('進出雲端後，store 恢復本機 mirror，之後的 lifecycle flush 不會刪掉它', async () => {
+    seedLocalMirror()
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+    documentStore.stopPersistence()
+
+    // 本機沒有 IndexedDB 草稿：store 的內容只能來自 localStorage mirror
+    await documentStore.startPersistence(fakeLocalBackend(null).backend)
+    expect(commentStore.comments.map((c) => c.id)).toEqual(['c-local'])
+
+    fireVisibilityHidden()
+
+    expect(mirrorIds()).toEqual(['c-local'])
+  })
+
+  it('回到本機後 mirror 恢復寫入', async () => {
+    seedLocalMirror()
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+    documentStore.stopPersistence()
+    await documentStore.startPersistence(fakeLocalBackend(null).backend)
+
+    const added = commentStore.add(60, 60)
+
+    expect(mirrorIds()).toEqual(['c-local', added.id])
+  })
+})
