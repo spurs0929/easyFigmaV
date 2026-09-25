@@ -66,6 +66,7 @@ function remove(member: ProjectMember): void {
         @keyup.enter="invite"
       />
       <Button
+        class="members-invite-button"
         label="邀請"
         size="small"
         :disabled="!inviteEmail.trim()"
@@ -99,7 +100,7 @@ function remove(member: ProjectMember): void {
     </ul>
 
     <template #footer>
-      <Button label="關閉" text @click="emit('close')" />
+      <Button label="關閉" severity="secondary" @click="emit('close')" />
     </template>
   </Dialog>
 </template>

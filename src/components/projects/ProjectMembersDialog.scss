@@ -5,6 +5,14 @@
   margin-bottom: 4px;
 }
 
+// 輸入框是 fluid（width: 100%），不擋住的話會把按鈕擠到文字換行。
+// min-width 預留 loading icon 的空間，送出時按鈕寬度不會跳動。
+.members-invite-button {
+  flex-shrink: 0;
+  min-width: 4.75rem;
+  white-space: nowrap;
+}
+
 .members-hint,
 .members-state {
   margin: 8px 0 0;
