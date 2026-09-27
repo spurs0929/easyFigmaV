@@ -1,5 +1,5 @@
 // .divider 沿用 EditorToolbar.scss 的全域定義；這裡只補 presence 相關樣式。
-// 頭像尺寸與 AccountMenu 的 .account-avatar 一致，工具列看起來是同一套元件。
+// 頭像的尺寸與字體由 UserAvatar 負責，與 AccountMenu 共用。
 
 .presence-members {
   display: flex;
@@ -17,28 +17,24 @@
 }
 
 .presence-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
   background: #3a3a3a;
-  color: #e8e8e8;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
   cursor: default;
 
   &.is-owner {
     box-shadow: 0 0 0 1.5px #6366f1;
   }
+}
 
-  &.is-overflow {
-    background: transparent;
-    color: #a0a0a0;
-    font-size: 10px;
-  }
+// +N 不是使用者，所以不用 UserAvatar；只借同樣的 20px 高度與頭像對齊。
+.presence-overflow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  color: #a0a0a0;
+  font-size: 10px;
+  line-height: 1;
+  cursor: default;
 }
 
 .presence-status {

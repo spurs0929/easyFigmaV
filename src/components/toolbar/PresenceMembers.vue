@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import UserAvatar from '@/components/common/UserAvatar.vue'
 import { useAuthStore } from '@/store/auth'
 import { usePresenceStore } from '@/store/presence'
 import type { PresenceUser } from '@/types/presence'
@@ -21,10 +22,6 @@ const hiddenUsers = computed(() => presence.users.slice(MAX_VISIBLE_AVATARS))
 
 function nameOf(user: PresenceUser): string {
   return user.display_name?.trim() || UNNAMED_USER
-}
-
-function initialOf(user: PresenceUser): string {
-  return (nameOf(user)[0] ?? '?').toUpperCase()
 }
 
 function labelOf(user: PresenceUser): string {
@@ -61,17 +58,16 @@ const summary = computed(() => {
   >
     <hr class="divider" />
 
-    <span
+    <UserAvatar
       v-for="user in visibleUsers"
       :key="user.user_id"
       v-tooltip.right="{ value: labelOf(user), showDelay: 300, pt: { root: 'toolbar-tooltip' } }"
+      :name="nameOf(user)"
       class="presence-avatar"
       :class="{ 'is-owner': user.role === 'owner' }"
       :aria-label="labelOf(user)"
       data-testid="presence-avatar"
-    >
-      {{ initialOf(user) }}
-    </span>
+    />
 
     <span
       v-if="hiddenUsers.length"
@@ -80,7 +76,7 @@ const summary = computed(() => {
         showDelay: 300,
         pt: { root: 'toolbar-tooltip' },
       }"
-      class="presence-avatar is-overflow"
+      class="presence-overflow"
       :aria-label="`另外 ${hiddenUsers.length} 人`"
     >
       +{{ hiddenUsers.length }}

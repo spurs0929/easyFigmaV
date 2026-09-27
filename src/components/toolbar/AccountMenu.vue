@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef } from 'vue'
+import { ref, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import Popover from 'primevue/popover'
+import UserAvatar from '@/components/common/UserAvatar.vue'
 import { useAuthStore } from '@/store/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
 const popoverRef = useTemplateRef<InstanceType<typeof Popover>>('popover')
 const loggingOut = ref(false)
-
-const initial = computed(() => (auth.displayName.trim()[0] ?? '?').toUpperCase())
 
 function togglePopover(event: Event): void {
   popoverRef.value?.toggle(event)
@@ -64,7 +63,7 @@ async function handleLogout(): Promise<void> {
       :aria-label="`帳號：${auth.displayName}`"
       @click="togglePopover"
     >
-      <span class="account-avatar">{{ initial }}</span>
+      <UserAvatar :name="auth.displayName" class="account-avatar" />
     </button>
 
     <Popover ref="popover" :dismissable="true" class="toolbar-popover">
