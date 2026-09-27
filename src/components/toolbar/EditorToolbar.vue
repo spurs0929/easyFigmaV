@@ -4,6 +4,7 @@ import Popover from 'primevue/popover'
 import { useToolStore } from '@/store/tool'
 import DocumentActions from './DocumentActions.vue'
 import AccountMenu from './AccountMenu.vue'
+import PresenceMembers from './PresenceMembers.vue'
 import {
   TOOL_GROUPS,
   ToolGroup,
@@ -236,6 +237,7 @@ onUnmounted(() => {
     </Popover>
 
     <DocumentActions />
+    <PresenceMembers />
     <AccountMenu />
   </aside>
 </template>
