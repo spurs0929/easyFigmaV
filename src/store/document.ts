@@ -218,9 +218,14 @@ export const useDocumentStore = defineStore('document', () => {
    * 1. 先嘗試從 IndexedDB 載入上次存檔
    * 2. 開始監聽 documentRevision 變化以觸發自動存檔
    * 3. 若無存檔但 store 已有資料（e.g. 預設 mock），立刻存一份
+   *
+   * 回傳是否載入成功且仍是當前這一次啟動。雲端專案回傳 true 代表專案存在、
+   * 使用者有權限、內容也合法，依附在專案上的功能（presence）以此為起點。
    */
-  async function startPersistence(backend: DocumentBackend = localDocumentBackend): Promise<void> {
-    if (_started) return
+  async function startPersistence(
+    backend: DocumentBackend = localDocumentBackend,
+  ): Promise<boolean> {
+    if (_started) return false
     _started = true
     const generation = ++_generation
     _backend = backend
@@ -233,7 +238,7 @@ export const useDocumentStore = defineStore('document', () => {
     const loaded = await loadPersistedDocument(backend, generation)
     // 第二道檢查。上面那道擋的是「套用內容」，這道擋的是「註冊資源」——
     // 兩件事都要擋，但擋不掉對方。
-    if (generation !== _generation) return
+    if (generation !== _generation) return false
 
     _watchStop = watch(
       [() => elementStore.documentRevision, () => commentStore.documentRevision],
@@ -252,6 +257,7 @@ export const useDocumentStore = defineStore('document', () => {
     ) {
       void persistNow()
     }
+    return loaded
   }
 
   /** 衝突後重新載入雲端版本。本機未存的變更會被丟棄，呼叫端要先確認過。 */

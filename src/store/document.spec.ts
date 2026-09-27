@@ -479,3 +479,50 @@ describe('雲端專案的留言不得寫入 comment store 的 localStorage mirro
     expect(mirrorIds()).toEqual(['c-local', added.id])
   })
 })
+
+describe('startPersistence 的回傳值（presence 以此決定是否連線）', () => {
+  it('載入成功回傳 true', async () => {
+    const documentStore = useDocumentStore()
+    const a = fakeBackend('A', 1000)
+
+    const started = documentStore.startPersistence(a.backend)
+    a.resolve()
+
+    await expect(started).resolves.toBe(true)
+  })
+
+  it('載入失敗（404、無權限、內容不合法）回傳 false', async () => {
+    const documentStore = useDocumentStore()
+    const failing: DocumentBackend = {
+      kind: 'cloud',
+      available: true,
+      debounceMs: 0,
+      load: () => Promise.reject(new Error('找不到專案')),
+      save: vi.fn(),
+    }
+
+    await expect(documentStore.startPersistence(failing)).resolves.toBe(false)
+  })
+
+  it('載入期間已被 stop（離開或換專案）回傳 false', async () => {
+    const documentStore = useDocumentStore()
+    const a = fakeBackend('A', 1000)
+
+    const started = documentStore.startPersistence(a.backend)
+    documentStore.stopPersistence()
+    a.resolve()
+
+    await expect(started).resolves.toBe(false)
+  })
+
+  it('已經啟動時重複呼叫回傳 false', async () => {
+    const documentStore = useDocumentStore()
+    const a = fakeBackend('A', 1000)
+    const first = documentStore.startPersistence(a.backend)
+
+    await expect(documentStore.startPersistence(a.backend)).resolves.toBe(false)
+
+    a.resolve()
+    await first
+  })
+})

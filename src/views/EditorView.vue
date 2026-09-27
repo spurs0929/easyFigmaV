@@ -11,6 +11,7 @@ import DialogActions from '@/components/common/DialogActions.vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { createCloudDocumentBackend, localDocumentBackend } from '@/services/documentBackend'
 import { useDocumentStore } from '@/store/document'
+import { usePresenceStore } from '@/store/presence'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,17 +26,29 @@ const projectId = typeof route.params.id === 'string' ? route.params.id : null
 // 顯示明確的說明，而不是讓版面破掉。
 const isEditorSupported = useMediaQuery('(min-width: 900px)')
 
+const presenceStore = usePresenceStore()
+let unmounted = false
+
 // 不論尺寸都啟動持久化：使用者可能從窄視窗拉寬，若在這裡加條件，
 // 就要處理「拉寬之後才補啟動」的時序，徒增出錯機會。
 // 未渲染畫布時這些 watcher 幾乎沒有成本。
-onMounted(() => {
-  void documentStore.startPersistence(
-    projectId ? createCloudDocumentBackend(projectId) : localDocumentBackend,
-  )
+onMounted(async () => {
+  if (!projectId) {
+    // 本機草稿沒有「其他人」，不建立 presence 連線。
+    void documentStore.startPersistence(localDocumentBackend)
+    return
+  }
+
+  // presence 等專案成功載入才連：專案不存在、沒有權限或內容壞掉時，
+  // 開一條註定被 4404 拒絕的 socket 沒有意義。
+  const loaded = await documentStore.startPersistence(createCloudDocumentBackend(projectId))
+  if (loaded && !unmounted) presenceStore.connect(projectId)
 })
 
 onUnmounted(() => {
+  unmounted = true
   documentStore.stopPersistence()
+  if (projectId) presenceStore.disconnect()
 })
 </script>
 
