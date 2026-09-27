@@ -6,6 +6,22 @@ from pydantic import BaseModel, ConfigDict
 from app.schemas.project import ProjectRole
 
 
+class PresenceAuthMessage(BaseModel):
+    """WebSocket 連上後的第一則訊息。
+
+    extra="forbid"：協定只有這兩個欄位，多出來的東西代表 client 與 server
+    對協定的理解不一致，直接拒絕比默默忽略容易發現。
+
+    access_token 允許缺少或為空，由 endpoint 回「認證失敗」而不是「格式錯誤」：
+    client 沒有 token 是登入狀態的問題，該做的是重新登入，不是修 bug。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["auth"]
+    access_token: str | None = None
+
+
 class PresenceUser(BaseModel):
     """一個在線使用者。單位是 user，不是連線：同一人開幾個分頁都只出現一次。
 

@@ -23,6 +23,20 @@ _UNAUTHORIZED = HTTPException(
 )
 
 
+async def user_from_token(db: AsyncSession, token: str) -> User | None:
+    """access token → 使用者。任何失敗都回 None，由呼叫端決定怎麼拒絕。
+
+    從 get_current_user 抽出來，讓 WebSocket 共用同一套驗證：REST 從 header 取
+    token、失敗回 401；WebSocket 從第一則訊息取 token、失敗以 close code 拒絕。
+    兩邊不同的只有「token 從哪來、失敗怎麼回」，驗證規則只寫在這一份。
+    """
+    user_id = decode_access_token(token)
+    if user_id is None:
+        return None
+    # token 有效但使用者已被刪除時也是 None
+    return await db.scalar(select(User).where(User.id == user_id))
+
+
 async def get_current_user(
     db: DbSession,
     authorization: Annotated[str | None, Header()] = None,
@@ -36,13 +50,8 @@ async def get_current_user(
     if not authorization or not authorization.lower().startswith("bearer "):
         raise _UNAUTHORIZED
 
-    user_id = decode_access_token(authorization[7:].strip())
-    if user_id is None:
-        raise _UNAUTHORIZED
-
-    user = await db.scalar(select(User).where(User.id == user_id))
+    user = await user_from_token(db, authorization[7:].strip())
     if user is None:
-        # token 有效但使用者已被刪除
         raise _UNAUTHORIZED
 
     return user
