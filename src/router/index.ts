@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import EditorView from '@/views/EditorView.vue'
 import { useAuthStore } from '@/store/auth'
+import { installSessionGuard } from './sessionGuard'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -76,5 +77,7 @@ router.beforeEach(async (to) => {
 
   return true
 })
+
+installSessionGuard(router)
 
 export default router
