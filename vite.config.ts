@@ -30,6 +30,10 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        // Presence WebSocket（/api/ws/...）也走同一條 proxy。changeOrigin 只改 Host，
+        // 瀏覽器送出的 Origin（http://localhost:5173）原樣轉發，後端的 Origin
+        // 允許清單因此不需要為開發環境放寬。
+        ws: true,
       },
     },
   },

@@ -27,3 +27,19 @@ export const REFRESH_MAX_RETRIES = 2
  * 重試採遞增延遲，避免並行 refresh 發生衝突後立即再次競爭。
  */
 export const REFRESH_RETRY_DELAY_MS = 150
+
+/**
+ * Presence 斷線重連的第一次延遲。之後每次加倍（1s → 2s → 4s …）。
+ *
+ * 不是固定間隔：server 重啟或 Render 冷啟動時，所有 client 會同時斷線，
+ * 固定且很短的間隔等於一起打一個還沒起來的服務。
+ */
+export const PRESENCE_RECONNECT_BASE_DELAY_MS = 1_000
+
+/**
+ * Presence 重連延遲的上限。
+ *
+ * 不設次數上限：presence 只是輔助資訊，斷線時持續低頻重試即可，
+ * 放棄重連反而需要另一套 UI 讓使用者手動恢復。
+ */
+export const PRESENCE_RECONNECT_MAX_DELAY_MS = 30_000
