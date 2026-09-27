@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import Button from 'primevue/button'
-import Dialog from 'primevue/dialog'
 import Toolbar from '@/components/toolbar/EditorToolbar.vue'
 import LayerPanel from '@/components/LayerPanel/LayerPanel.vue'
 import CanvasArea from '@/components/canvas/CanvasArea.vue'
 import PropertiesPanel from '@/components/properties/PropertiesPanel.vue'
 import DesktopOnlyNotice from '@/components/editor/DesktopOnlyNotice.vue'
+import AppDialog from '@/components/common/AppDialog.vue'
+import DialogActions from '@/components/common/DialogActions.vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { createCloudDocumentBackend, localDocumentBackend } from '@/services/documentBackend'
 import { useDocumentStore } from '@/store/document'
@@ -53,19 +53,20 @@ onUnmounted(() => {
     衝突對話框刻意不可關閉，也刻意不提供「強制覆蓋」。
     強制覆蓋等於把樂觀鎖關掉，後端那段 compare-and-set 就失去意義了。
   -->
-  <Dialog
+  <AppDialog
     :visible="documentStore.saveState === 'conflict'"
-    modal
-    :closable="false"
-    :close-on-escape="false"
+    :dismissible="false"
     header="無法儲存"
-    :style="{ width: 'min(420px, 92vw)' }"
   >
     <p>這個專案已在其他視窗被修改，目前的變更無法存回雲端。</p>
     <p>重新載入會取得最新版本，這個視窗尚未儲存的變更將會遺失。</p>
     <template #footer>
-      <Button label="回到專案列表" text @click="router.push({ name: 'projects' })" />
-      <Button label="重新載入" @click="documentStore.reloadFromBackend()" />
+      <DialogActions
+        secondary-label="回到專案列表"
+        primary-label="重新載入"
+        @secondary="router.push({ name: 'projects' })"
+        @primary="documentStore.reloadFromBackend()"
+      />
     </template>
-  </Dialog>
+  </AppDialog>
 </template>
