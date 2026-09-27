@@ -9,10 +9,19 @@ const props = withDefaults(
     busy?: boolean
     /** false 代表只能透過 footer 的動作離開，例如必須二選一的衝突對話框。 */
     dismissible?: boolean
+    /**
+     * 點遮罩是否關閉。與 dismissible 分開：各對話框原本的遮罩行為不一致，
+     * 預設沿用 PrimeVue 的 false。被 busy / dismissible 鎖住時一律無效。
+     */
+    dismissableMask?: boolean
+    /** CSS width。尺寸種類還少，先直接收值，等需求穩定再收斂成語意化的 size。 */
+    width?: string
   }>(),
   {
     busy: false,
     dismissible: true,
+    dismissableMask: false,
+    width: 'min(420px, 92vw)',
   },
 )
 
@@ -32,8 +41,6 @@ const visibleModel = computed({
     visible.value = value
   },
 })
-
-const DIALOG_WIDTH = 'min(420px, 92vw)'
 </script>
 
 <template>
@@ -44,8 +51,8 @@ const DIALOG_WIDTH = 'min(420px, 92vw)'
     :header="header"
     :closable="!locked"
     :close-on-escape="!locked"
-    :dismissable-mask="!locked"
-    :style="{ width: DIALOG_WIDTH }"
+    :dismissable-mask="dismissableMask && !locked"
+    :style="{ width }"
   >
     <slot />
     <template v-if="$slots.footer" #footer>

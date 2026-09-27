@@ -5,7 +5,12 @@ import PrimeVue from 'primevue/config'
 import Dialog from 'primevue/dialog'
 import AppDialog from './AppDialog.vue'
 
-type AppDialogProps = { busy?: boolean; dismissible?: boolean }
+type AppDialogProps = {
+  busy?: boolean
+  dismissible?: boolean
+  dismissableMask?: boolean
+  width?: string
+}
 
 let wrapper: VueWrapper | null = null
 
@@ -75,9 +80,26 @@ describe('AppDialog', () => {
       pressEscape()
       expect(closeRequests(w)).toEqual([[false]])
     })
+  })
 
-    it('點遮罩會送出關閉', async () => {
+  it('沒指定 width 時使用預設寬度，指定時套用 caller 的值', async () => {
+    const w = await mountDialog()
+    const dialogStyle = () => w.findComponent(Dialog).vm.$attrs.style
+    expect(dialogStyle()).toEqual({ width: 'min(420px, 92vw)' })
+
+    await w.setProps({ width: 'min(30rem, calc(100vw - 2rem))' })
+    expect(dialogStyle()).toEqual({ width: 'min(30rem, calc(100vw - 2rem))' })
+  })
+
+  describe('遮罩關閉由 caller 決定', () => {
+    it('預設點遮罩不會關閉', async () => {
       const w = await mountDialog()
+      clickMask()
+      expect(closeRequests(w)).toEqual([])
+    })
+
+    it('dismissableMask=true 時點遮罩會送出關閉', async () => {
+      const w = await mountDialog({ dismissableMask: true })
       clickMask()
       expect(closeRequests(w)).toEqual([[false]])
     })
@@ -98,8 +120,8 @@ describe('AppDialog', () => {
       expect(closeRequests(w)).toEqual([])
     })
 
-    it('點遮罩不會關閉', async () => {
-      const w = await mountDialog(props)
+    it('即使 dismissableMask=true，點遮罩也不會關閉', async () => {
+      const w = await mountDialog({ ...props, dismissableMask: true })
       clickMask()
       expect(closeRequests(w)).toEqual([])
     })
