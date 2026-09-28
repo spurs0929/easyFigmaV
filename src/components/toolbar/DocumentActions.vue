@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { TOOLBAR_TOOLTIP_PT, TOOLTIP_DELAY } from '@/constants/tooltip'
 import { useAuthStore } from '@/store/auth'
 import { useDocumentStore } from '@/store/document'
 import { useProjectsStore } from '@/store/projects'
@@ -101,8 +102,8 @@ async function onImportChange(event: Event): Promise<void> {
     <button
       v-tooltip.right="{
         value: '匯出目前文件為 JSON',
-        showDelay: 400,
-        pt: { root: 'toolbar-tooltip' },
+        showDelay: TOOLTIP_DELAY.action,
+        pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="tool-btn"
       aria-label="匯出文件 JSON"
@@ -121,8 +122,8 @@ async function onImportChange(event: Event): Promise<void> {
     <button
       v-tooltip.right="{
         value: '匯入 DocumentSnapshot JSON 檔案',
-        showDelay: 400,
-        pt: { root: 'toolbar-tooltip' },
+        showDelay: TOOLTIP_DELAY.action,
+        pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="tool-btn"
       aria-label="匯入文件 JSON"
@@ -142,8 +143,8 @@ async function onImportChange(event: Event): Promise<void> {
       v-if="!documentStore.isCloud"
       v-tooltip.right="{
         value: '把目前的草稿複製一份到雲端專案',
-        showDelay: 400,
-        pt: { root: 'toolbar-tooltip' },
+        showDelay: TOOLTIP_DELAY.action,
+        pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="tool-btn"
       aria-label="存到雲端"
@@ -169,8 +170,8 @@ async function onImportChange(event: Event): Promise<void> {
     <div
       v-tooltip.right="{
         value: statusTooltip,
-        showDelay: 300,
-        pt: { root: 'toolbar-tooltip' },
+        showDelay: TOOLTIP_DELAY.status,
+        pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="document-status"
       :class="`is-${documentStore.saveState}`"

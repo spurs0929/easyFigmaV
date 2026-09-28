@@ -3,6 +3,7 @@ import { ref, useTemplateRef } from 'vue'
 import { useRouter } from 'vue-router'
 import Popover from 'primevue/popover'
 import UserAvatar from '@/components/common/UserAvatar.vue'
+import { TOOLBAR_TOOLTIP_PT, TOOLTIP_DELAY } from '@/constants/tooltip'
 import { useAuthStore } from '@/store/auth'
 
 const auth = useAuthStore()
@@ -41,7 +42,11 @@ async function handleLogout(): Promise<void> {
 
     <button
       v-if="!auth.isAuthenticated"
-      v-tooltip.right="{ value: '登入或註冊', showDelay: 400, pt: { root: 'toolbar-tooltip' } }"
+      v-tooltip.right="{
+        value: '登入或註冊',
+        showDelay: TOOLTIP_DELAY.action,
+        pt: TOOLBAR_TOOLTIP_PT,
+      }"
       class="tool-btn"
       aria-label="登入或註冊"
       @click="goLogin"
@@ -58,7 +63,11 @@ async function handleLogout(): Promise<void> {
 
     <button
       v-else
-      v-tooltip.right="{ value: auth.displayName, showDelay: 400, pt: { root: 'toolbar-tooltip' } }"
+      v-tooltip.right="{
+        value: auth.displayName,
+        showDelay: TOOLTIP_DELAY.action,
+        pt: TOOLBAR_TOOLTIP_PT,
+      }"
       class="tool-btn account-btn"
       :aria-label="`帳號：${auth.displayName}`"
       @click="togglePopover"

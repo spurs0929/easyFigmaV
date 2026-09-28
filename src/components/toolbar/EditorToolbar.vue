@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import Popover from 'primevue/popover'
+import { TOOLBAR_TOOLTIP_PT, TOOLTIP_DELAY } from '@/constants/tooltip'
 import { useToolStore } from '@/store/tool'
 import DocumentActions from './DocumentActions.vue'
 import AccountMenu from './AccountMenu.vue'
@@ -154,8 +155,8 @@ onUnmounted(() => {
           <button
             v-tooltip.right="{
               value: tooltipValue(activeToolPerGroup[entry.group]),
-              showDelay: 400,
-              pt: { root: 'toolbar-tooltip' },
+              showDelay: TOOLTIP_DELAY.action,
+              pt: TOOLBAR_TOOLTIP_PT,
             }"
             class="tool-btn"
             :class="{ active: isGroupActive(entry.group) }"
@@ -215,8 +216,8 @@ onUnmounted(() => {
           :class="{ active: toolStore.activeTool === tool.type }"
           v-tooltip.right="{
             value: tooltipValue(tool),
-            showDelay: 400,
-            pt: { root: 'toolbar-tooltip' },
+            showDelay: TOOLTIP_DELAY.action,
+            pt: TOOLBAR_TOOLTIP_PT,
           }"
           @click="selectSubTool(tool.type)"
         >

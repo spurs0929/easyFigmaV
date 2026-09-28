@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import UserAvatar from '@/components/common/UserAvatar.vue'
+import { TOOLBAR_TOOLTIP_PT, TOOLTIP_DELAY } from '@/constants/tooltip'
 import { useAuthStore } from '@/store/auth'
 import { usePresenceStore } from '@/store/presence'
 import type { PresenceUser } from '@/types/presence'
@@ -61,7 +62,11 @@ const summary = computed(() => {
     <UserAvatar
       v-for="user in visibleUsers"
       :key="user.user_id"
-      v-tooltip.right="{ value: labelOf(user), showDelay: 300, pt: { root: 'toolbar-tooltip' } }"
+      v-tooltip.right="{
+        value: labelOf(user),
+        showDelay: TOOLTIP_DELAY.status,
+        pt: TOOLBAR_TOOLTIP_PT,
+      }"
       :name="nameOf(user)"
       class="presence-avatar"
       :class="{ 'is-owner': user.role === 'owner' }"
@@ -73,8 +78,8 @@ const summary = computed(() => {
       v-if="hiddenUsers.length"
       v-tooltip.right="{
         value: hiddenUsers.map(labelOf).join('\n'),
-        showDelay: 300,
-        pt: { root: 'toolbar-tooltip' },
+        showDelay: TOOLTIP_DELAY.status,
+        pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="presence-overflow"
       :aria-label="`另外 ${hiddenUsers.length} 人`"
@@ -83,7 +88,7 @@ const summary = computed(() => {
     </span>
 
     <span
-      v-tooltip.right="{ value: summary, showDelay: 300, pt: { root: 'toolbar-tooltip' } }"
+      v-tooltip.right="{ value: summary, showDelay: TOOLTIP_DELAY.status, pt: TOOLBAR_TOOLTIP_PT }"
       class="presence-status"
       data-testid="presence-status"
     >
