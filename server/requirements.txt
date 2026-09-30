@@ -4,6 +4,11 @@
 
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
+# Serves the WebSocket protocol for uvicorn in production (auto-selected when
+# installed). uvicorn[standard] only asks for websockets>=10.4 with no upper
+# bound, and 0.32 uses the legacy API that newer websockets deprecates, so pin
+# the version the real-uvicorn presence smoke test was verified against.
+websockets==17.1
 
 # The [asyncio] extra pulls in greenlet explicitly. SQLAlchemy's async support
 # needs it, but in the base package it is a conditional dependency that varies
