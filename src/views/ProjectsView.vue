@@ -133,6 +133,7 @@ async function confirmDelete(): Promise<void> {
     <Dialog
       :visible="deleting !== null"
       modal
+      :draggable="false"
       header="刪除專案"
       :style="{ width: 'min(360px, 92vw)' }"
       @update:visible="deleting = null"
