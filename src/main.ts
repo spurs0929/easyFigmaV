@@ -14,6 +14,7 @@ app.use(router)
 app.use(PrimeVue, {
   theme: {
     preset: Aura,
+    // v1 固定 dark-only：.dark 常駐在 index.html 的 <html>，沒有切換機制。
     options: { darkModeSelector: '.dark' },
   },
 })
