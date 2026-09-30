@@ -15,9 +15,17 @@ $color-active-bg: #2a2a3e;
   background: $color-bg;
   border-right: 1px solid $color-border;
   padding: 8px 0;
-  overflow: visible; // 允許 Popover 溢出
+  // 視窗太矮時改為垂直捲動，避免底部的帳號與在線成員被推出畫面。
+  // Popover 與 Tooltip 都掛在 body（PrimeVue 預設 appendTo），不受這裡的 overflow 裁切。
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none; // 48px 寬放不下捲軸，用滾輪或觸控板捲動
   z-index: 100;
   user-select: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .toolbar-actions {
@@ -52,6 +60,7 @@ $color-active-bg: #2a2a3e;
   justify-content: center;
   width: 36px;
   height: 36px;
+  flex-shrink: 0; // 高度不足時捲動工具列，而不是壓扁按鈕
   margin: 1px auto 0;
   border: none;
   border-radius: 6px;
@@ -116,6 +125,7 @@ $color-active-bg: #2a2a3e;
 .divider {
   width: 24px;
   height: 1px;
+  flex-shrink: 0;
   margin: 4px auto;
   border: none;
   background: $color-border;

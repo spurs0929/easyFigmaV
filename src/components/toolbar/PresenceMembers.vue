@@ -6,7 +6,7 @@ import { useAuthStore } from '@/store/auth'
 import { usePresenceStore } from '@/store/presence'
 import type { PresenceUser } from '@/types/presence'
 
-/** 工具列只有 48px 寬，超過這個數量改顯示 +N。 */
+/** 頭像在工具列裡直向堆疊，每多一個就佔掉約 24px 高度；超過這個數量改顯示 +N。 */
 const MAX_VISIBLE_AVATARS = 3
 const UNNAMED_USER = '未命名使用者'
 const ROLE_LABELS: Record<PresenceUser['role'], string> = {
