@@ -46,11 +46,21 @@ class Comment(Base):
         # 不加 DESC、不把 id 放進來：理由同 ix_projects_owner_id_updated_at，
         # 而 id 只是同一瞬間建立時的 tie-breaker，不值得為它加寬索引。
         Index("ix_comments_project_id_created_at", "project_id", "created_at"),
-        # 擋掉空白留言。API 會先 trim 再驗證，這是第二道——空的 pin 在畫布上
-        # 是一個看不出用途的東西。
-        # ⚠️ 這道比 API 窄：btrim(text) 只去掉空白字元，換行與 tab 不算，所以只含
-        # 換行的內容過得了這裡。完整的「trim 後不可為空」由 schema 負責。
-        CheckConstraint("char_length(btrim(content)) > 0", name="content_not_blank"),
+        # content 至少要有一個非空白字元。空的 pin 在畫布上是一個看不出用途的東西。
+        #
+        # 不用 projects 那條的 btrim(content)：btrim(text) 預設只去掉空格（U+0020），
+        # 只含換行或 tab 的內容過得了它。
+        #
+        # 把空白字元逐一列出，而不是寫 \S 或 [[:space:]]，原因有兩個：
+        #   1. 那兩種寫法對非 ASCII 字元的判斷取決於資料庫的 collation——全形空白
+        #      U+3000 在 C.UTF-8 之下算空白、在 C 之下不算。CHECK 的結果若會隨環境
+        #      改變，同一筆資料就可能在本機寫得進去、還原到另一台卻失敗。
+        #   2. [[:space:]] 裡的冒號會被 SQLAlchemy 的 text() 當成 bind parameter。
+        # 列出來的是 ASCII 的六個空白：空格、tab、LF、CR、form feed、vertical tab。
+        #
+        # 範圍因此刻意停在 ASCII：全形空白這類 Unicode 空白過得了這裡，由 API 的
+        # 驗證負責。必須是 raw string——否則 Python 會先把 \t、\n 換成真的字元。
+        CheckConstraint(r"content ~ '[^ \t\n\r\f\v]'", name="content_not_blank"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

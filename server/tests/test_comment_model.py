@@ -6,7 +6,7 @@
 """
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.models import Comment, Project, User
@@ -46,7 +46,35 @@ async def test_server_defaults_are_filled_in(db_session, make_user, make_project
     assert (comment.world_x, comment.world_y) == (120.5, -48.25)
 
 
-@pytest.mark.parametrize("content", ["", " ", "     "], ids=repr)
+# 只由空白組成的內容。CHECK 列舉的是 ASCII 的六個空白字元，這裡每一個都要單獨
+# 出現過一次——少列一個，對應的那筆就會寫得進去。
+BLANK_CONTENTS = [
+    pytest.param("", id="empty"),
+    pytest.param(" ", id="one-space"),
+    pytest.param("    ", id="spaces"),
+    pytest.param("\t", id="tab"),
+    pytest.param("\n", id="newline"),
+    pytest.param("\r", id="carriage-return"),
+    pytest.param("\r\n", id="crlf"),
+    pytest.param("\f", id="form-feed"),
+    pytest.param("\v", id="vertical-tab"),
+    pytest.param(" \t\n\r ", id="mixed"),
+]
+
+# 有內容，只是前後（或中間）帶著空白。CHECK 不能因為看到空白就整筆拒絕，
+# 也不負責 trim——存進去的必須是原樣。
+NON_BLANK_CONTENTS = [
+    pytest.param("a", id="single-char"),
+    pytest.param("hello", id="ascii"),
+    pytest.param(" hello ", id="ascii-padded-with-spaces"),
+    pytest.param("\nhello\t", id="ascii-padded-with-newline-and-tab"),
+    pytest.param("測試", id="unicode"),
+    pytest.param(" 測試\n", id="unicode-padded"),
+    pytest.param("第一行\n\n第二行", id="multiline"),
+]
+
+
+@pytest.mark.parametrize("content", BLANK_CONTENTS)
 async def test_blank_content_is_rejected_by_the_database(
     db_session, make_user, make_project, content
 ):
@@ -65,26 +93,42 @@ async def test_blank_content_is_rejected_by_the_database(
     assert await _count(db_session, project) == 0
 
 
-@pytest.mark.parametrize("content", ["\n", "\t", " \n\t "], ids=repr)
-async def test_check_does_not_cover_non_space_whitespace(
+@pytest.mark.parametrize("content", NON_BLANK_CONTENTS)
+async def test_content_with_surrounding_whitespace_is_accepted_as_is(
     db_session, make_user, make_project, content
 ):
-    """記錄 CHECK 的實際範圍，不是期望的行為。
-
-    PostgreSQL 的 btrim(text) 只去掉空白字元（U+0020），換行與 tab 不算。所以只含
-    換行或 tab 的內容過得了這條 CHECK——「trim 之後不可為空」的完整語意由 API 層
-    負責（Python 的 str.strip 會去掉所有空白字元）。
-
-    這條測試存在的目的是讓這個落差被看見：哪天把 CHECK 加強了，它會失敗，
-    提醒把這裡一起改掉，而不是讓人以為資料庫一直都擋得住。
-    """
     owner = await make_user()
     project = await make_project(owner)
 
     db_session.add(_comment(project, owner, content))
     await db_session.flush()
 
-    assert await _count(db_session, project) == 1
+    stored = await db_session.scalar(
+        select(Comment.content).where(Comment.project_id == project.id)
+    )
+    assert stored == content
+
+
+@pytest.mark.parametrize("content", BLANK_CONTENTS)
+async def test_existing_comment_cannot_be_updated_to_blank(
+    db_session, make_user, make_project, content
+):
+    """CHECK 對 UPDATE 同樣成立：留言不能先合法建立、再被改成空白。"""
+    owner = await make_user()
+    project = await make_project(owner)
+    comment = _comment(project, owner, "原本的內容")
+    db_session.add(comment)
+    await db_session.flush()
+
+    with pytest.raises(IntegrityError) as excinfo:
+        async with db_session.begin_nested():
+            await db_session.execute(
+                update(Comment).where(Comment.id == comment.id).values(content=content)
+            )
+
+    assert "ck_comments_content_not_blank" in str(excinfo.value)
+    stored = await db_session.scalar(select(Comment.content).where(Comment.id == comment.id))
+    assert stored == "原本的內容"
 
 
 async def test_content_at_the_length_limit_is_accepted(db_session, make_user, make_project):

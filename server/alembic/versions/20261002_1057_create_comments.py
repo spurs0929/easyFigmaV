@@ -29,7 +29,8 @@ def upgrade() -> None:
     sa.Column('resolved', sa.Boolean(), server_default=sa.text('false'), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint('char_length(btrim(content)) > 0', name=op.f('ck_comments_content_not_blank')),
+    # raw string：必須與 app/models/comment.py 的 CheckConstraint 逐字相同。
+    sa.CheckConstraint(r"content ~ '[^ \t\n\r\f\v]'", name=op.f('ck_comments_content_not_blank')),
     sa.ForeignKeyConstraint(['author_id'], ['users.id'], name=op.f('fk_comments_author_id_users'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_comments_project_id_projects'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_comments'))
