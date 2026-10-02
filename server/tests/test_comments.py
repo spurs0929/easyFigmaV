@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, event, func, select
 
+from app.api import comments as comments_api
 from app.models import Comment, ProjectMember
 from app.models.comment import COMMENT_CONTENT_MAX_LENGTH
 
@@ -916,6 +917,55 @@ async def test_deleting_twice_gets_404_the_second_time(client, team, auth):
 
     assert first.status_code == 204
     assert second.status_code == 404
+
+
+@pytest.fixture
+def vanish_after_lookup(monkeypatch, db_session):
+    """模擬「授權查詢之後、寫入之前，留言被另一個請求刪掉」。
+
+    把端點用的 _load_author 換成一個包裝：先呼叫真正的查詢（所以授權看到的是一則
+    存在的留言、作者也是對的），回傳之前把那一列刪掉。端點接下來的 DELETE / UPDATE
+    因此一定落空。
+
+    用這個方式而不是真的並行送兩個請求：要測的是端點怎麼處理「影響 0 列」，不是
+    PostgreSQL 的排程。並行請求誰先誰後無法保證，測試會時過時不過；這個包裝每次都
+    走到同一條路徑，而且 production code 不需要為了測試留任何 hook。
+    """
+    real_load_author = comments_api._load_author
+
+    async def _load_then_vanish(db, project_id, comment_id):
+        author = await real_load_author(db, project_id, comment_id)
+        await db_session.execute(delete(Comment).where(Comment.id == comment_id))
+        return author
+
+    monkeypatch.setattr(comments_api, "_load_author", _load_then_vanish)
+
+
+async def test_delete_gets_404_when_the_comment_vanishes_after_the_lookup(
+    client, db_session, team, auth, vanish_after_lookup
+):
+    """DELETE 沒刪到任何列時不能回 204——那是在回報一件沒發生的事。"""
+    response = await client.delete(
+        f"{_base(team.project.id)}/{team.comment.id}", headers=auth(team.author)
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "找不到留言"
+    assert await _stored(db_session, team.comment.id) is None
+
+
+async def test_patch_gets_404_when_the_comment_vanishes_after_the_lookup(
+    client, db_session, team, auth, vanish_after_lookup
+):
+    """PATCH 的同一條路徑：UPDATE ... RETURNING 沒有回傳列。DELETE 與它語意相同。"""
+    response = await client.patch(
+        f"{_base(team.project.id)}/{team.comment.id}",
+        json={"resolved": True},
+        headers=auth(team.other_member),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "找不到留言"
 
 
 async def test_owner_can_delete_their_own_comment(client, db_session, team, make_comment, auth):

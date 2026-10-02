@@ -252,7 +252,12 @@ async def delete_comment(
     if not _is_author(author.author_id, user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有留言的作者能刪除")
 
-    await db.execute(
+    result = await db.execute(
         delete(Comment).where(Comment.id == comment_id, Comment.project_id == project.id)
     )
+    if result.rowcount == 0:
+        # 上面查到之後、DELETE 之前，留言被另一個請求刪掉了（同一個作者開兩個分頁
+        # 就做得到）。204 的意思是「這個請求把它刪掉了」，沒刪到任何列就不能這樣回。
+        # 與 update_comment 的同一種情況語意相同。
+        raise _comment_not_found()
     await db.commit()
