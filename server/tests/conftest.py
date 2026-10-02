@@ -9,6 +9,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -146,7 +147,7 @@ from app.core.security import create_access_token, hash_password_sync  # noqa: E
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Project, ProjectMember, User  # noqa: E402
+from app.models import Comment, Project, ProjectMember, User  # noqa: E402
 
 TEST_PASSWORD = "correct-horse-battery-staple"
 
@@ -327,6 +328,47 @@ async def make_member(db_session: AsyncSession) -> Callable[..., Awaitable[Proje
         db_session.add(member)
         await db_session.flush()
         return member
+
+    return _make
+
+
+@pytest_asyncio.fixture
+async def make_comment(db_session: AsyncSession) -> Callable[..., Awaitable[Comment]]:
+    """在專案裡放一則留言。
+
+    不走 POST /comments：多數測試要的是「已經有一則某人寫的留言」這個初始狀態，
+    而且作者可以是任何 user——包含已經不是成員的人，那是端點建立不出來的狀態。
+
+    created_at 可以指定。所有測試都跑在同一個交易裡，now() 在交易內是固定值，
+    不指定的話每一則留言的 created_at 都相同，排序測試就只測得到 tie-breaker。
+    """
+
+    async def _make(
+        project: Project,
+        author: User,
+        content: str = "這裡的間距不對",
+        *,
+        world_x: float = 10.0,
+        world_y: float = 20.0,
+        resolved: bool = False,
+        created_at: datetime | None = None,
+    ) -> Comment:
+        comment = Comment(
+            project_id=project.id,
+            author_id=author.id,
+            content=content,
+            world_x=world_x,
+            world_y=world_y,
+            resolved=resolved,
+        )
+        if created_at is not None:
+            comment.created_at = created_at
+            comment.updated_at = created_at
+        db_session.add(comment)
+        await db_session.flush()
+        # id 與時間戳是 server default，flush 之後 Python 端還是空的
+        await db_session.refresh(comment)
+        return comment
 
     return _make
 

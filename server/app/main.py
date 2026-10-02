@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.comments import router as comments_router
 from app.api.health import router as health_router
 from app.api.members import router as members_router
 from app.api.presence import router as presence_router
@@ -61,6 +62,7 @@ app.include_router(health_router)
 app.include_router(auth_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(members_router, prefix="/api")
+app.include_router(comments_router, prefix="/api")
 # WebSocket 也掛在 /api 底下：本機 Vite proxy 的 /api 規則開啟 ws 之後就能同源連線，
 # 不必另開一條 proxy 規則。
 app.include_router(presence_router, prefix="/api")
