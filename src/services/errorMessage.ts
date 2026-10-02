@@ -16,6 +16,7 @@ const FIELD_MESSAGES: Record<string, string> = {
   password: '密碼長度需為 8 到 128 個字元',
   display_name: '顯示名稱最多 80 個字元',
   name: '專案名稱不可為空白，且最多 120 個字元',
+  content: '留言內容不可為空白，且最多 2000 個字元',
 }
 
 /** 把各種失敗轉成可以直接顯示的訊息。 */
