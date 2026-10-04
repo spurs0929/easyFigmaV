@@ -109,8 +109,21 @@ function mountActions(): VueWrapper {
   return wrapper
 }
 
-function button(label: string) {
-  return wrapper!.get(`button[aria-label="${label}"]`)
+/**
+ * 以 accessible name 的開頭找按鈕。
+ *
+ * 用開頭而不是完整文字：括號裡的範圍說明（「不含留言」）會依專案類型改變，
+ * 找按鈕這件事不該跟著壞掉。完整的文字由專門的測試斷言。
+ */
+const SAVE_TO_CLOUD = 'button[aria-label^="存到雲端"]'
+const EXPORT = 'button[aria-label^="匯出文件 JSON"]'
+
+function saveToCloudButton() {
+  return wrapper!.get(SAVE_TO_CLOUD)
+}
+
+function exportButton() {
+  return wrapper!.get(EXPORT)
 }
 
 function signIn(): void {
@@ -167,7 +180,7 @@ describe('DocumentActions 存到雲端', () => {
     })
     mountActions()
 
-    await button('存到雲端').trigger('click')
+    await saveToCloudButton().trigger('click')
     await flushPromises()
 
     expect(mockCreateProject).toHaveBeenCalledTimes(1)
@@ -189,18 +202,19 @@ describe('DocumentActions 存到雲端', () => {
     await seedLocalDraft()
     mountActions()
 
-    await button('存到雲端').trigger('click')
+    await saveToCloudButton().trigger('click')
     await flushPromises()
 
     expect(mockCreateProject).not.toHaveBeenCalled()
     expect(router.push).toHaveBeenCalledWith({ name: 'login', query: { redirect: '/' } })
   })
 
-  it('tooltip 說明複製的是畫布、不含留言', () => {
+  it('tooltip 與 accessible name 都說明不含留言', () => {
     mountActions()
-    expect(button('存到雲端').attributes('data-tooltip')).toBe(
+    expect(saveToCloudButton().attributes('data-tooltip')).toBe(
       '把目前的畫布複製一份到雲端專案（不含留言）',
     )
+    expect(saveToCloudButton().attributes('aria-label')).toBe('存到雲端（不含留言）')
   })
 })
 
@@ -208,7 +222,9 @@ describe('DocumentActions 匯出與匯入的說明', () => {
   it('本機草稿：匯出維持原本的說明，匯入對話框是本機的說明', () => {
     mountActions()
 
-    expect(button('匯出文件 JSON').attributes('data-tooltip')).toBe('匯出目前文件為 JSON')
+    expect(exportButton().attributes('data-tooltip')).toBe('匯出目前文件為 JSON')
+    // 本機匯出包含本機留言，accessible name 不該出現「不含留言」的說明
+    expect(exportButton().attributes('aria-label')).toBe('匯出文件 JSON')
     expect(wrapper!.getComponent(DocumentImportDialog).props('cloud')).toBe(false)
   })
 
@@ -216,11 +232,10 @@ describe('DocumentActions 匯出與匯入的說明', () => {
     await enterCloudProject()
     mountActions()
 
-    expect(button('匯出文件 JSON').attributes('data-tooltip')).toBe(
-      '匯出畫布為 JSON（不含雲端留言）',
-    )
+    expect(exportButton().attributes('data-tooltip')).toBe('匯出畫布為 JSON（不含雲端留言）')
+    expect(exportButton().attributes('aria-label')).toBe('匯出文件 JSON（不含雲端留言）')
     expect(wrapper!.getComponent(DocumentImportDialog).props('cloud')).toBe(true)
     // 雲端專案沒有「存到雲端」
-    expect(wrapper!.find('button[aria-label="存到雲端"]').exists()).toBe(false)
+    expect(wrapper!.find(SAVE_TO_CLOUD).exists()).toBe(false)
   })
 })

@@ -53,6 +53,14 @@ const exportTooltip = computed(() =>
 )
 
 /**
+ * 匯出按鈕的 accessible name。tooltip 只有滑鼠停留時才看得到，螢幕閱讀器讀的是
+ * aria-label——「不含雲端留言」是這個動作的範圍，兩邊都要有。
+ */
+const exportLabel = computed(() =>
+  documentStore.isCloud ? '匯出文件 JSON（不含雲端留言）' : '匯出文件 JSON',
+)
+
+/**
  * 存到雲端：一次性複製，不是持續同步。
  * 建立成功後就導向 /p/:id，之後的自動儲存由雲端 backend 接手，
  * 本機草稿留在 IndexedDB 不動——兩條路徑各自獨立，沒有合併問題。
@@ -117,7 +125,7 @@ async function onImportChange(event: Event): Promise<void> {
         pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="tool-btn"
-      aria-label="匯出文件 JSON"
+      :aria-label="exportLabel"
       @click="documentStore.exportJson()"
     >
       <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor">
@@ -158,7 +166,7 @@ async function onImportChange(event: Event): Promise<void> {
         pt: TOOLBAR_TOOLTIP_PT,
       }"
       class="tool-btn"
-      aria-label="存到雲端"
+      aria-label="存到雲端（不含留言）"
       :disabled="uploading"
       @click="saveToCloud"
     >
