@@ -76,6 +76,23 @@ export const useDocumentStore = defineStore('document', () => {
   }
 
   /**
+   * 建立新雲端專案時要送出的 document：與 buildSnapshot() 相同，但 comments 固定是空陣列。
+   *
+   * 「存到雲端」發生在留言來源還是本機的時候，buildSnapshot() 會帶著本機留言——
+   * 那是對的，本機草稿的留言本來就屬於它的快照。但雲端專案的留言只存在後端的
+   * comments 資料表，寫進 document.comments 的留言之後不會顯示，下一次存檔就被
+   * 蓋成空陣列，等於無聲消失。
+   *
+   * 本機草稿本身不受影響：它還在 IndexedDB 裡，留言也還在。這裡只是不讓新的雲端
+   * 專案繼承只屬於本機的留言。
+   *
+   * 欄位留著而不是拿掉：快照格式沒有變，少了 comments 就過不了 parseDocumentSnapshot。
+   */
+  function buildCloudSnapshot(): DocumentSnapshot {
+    return { ...buildSnapshot(), comments: [] }
+  }
+
+  /**
    * 將快照資料套用至各 store；以 _hydrating 旗標包住，
    * 防止 loadSnapshot / replaceAll 觸發 documentRevision 而引發不必要的自動存檔。
    *
@@ -363,6 +380,7 @@ export const useDocumentStore = defineStore('document', () => {
     persistenceAvailable,
     isCloud,
     buildSnapshot,
+    buildCloudSnapshot,
     startPersistence,
     reloadFromBackend,
     stopPersistence,

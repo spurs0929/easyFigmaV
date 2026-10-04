@@ -1,0 +1,22 @@
+.document-import-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.document-import-dialog__text,
+.document-import-dialog__hint,
+.document-import-dialog__error {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.document-import-dialog__hint {
+  color: #6b7280;
+  font-size: 0.95rem;
+}
+
+.document-import-dialog__error {
+  color: #ef4444;
+  font-size: 0.95rem;
+}

@@ -5,7 +5,7 @@ import PrimeVue from 'primevue/config'
 import Dialog from 'primevue/dialog'
 import DocumentImportDialog from './DocumentImportDialog.vue'
 
-type Props = { visible?: boolean; loading?: boolean; errorMessage?: string }
+type Props = { visible?: boolean; loading?: boolean; errorMessage?: string; cloud?: boolean }
 
 let wrapper: VueWrapper | null = null
 
@@ -97,6 +97,31 @@ describe('DocumentImportDialog', () => {
       const w = await mountDialog({ loading: true })
       await w.setProps({ visible: false })
       expect(w.findComponent(Dialog).props('visible')).toBe(false)
+    })
+  })
+
+  describe('匯入範圍的說明', () => {
+    const LOCAL_TEXT = '匯入 JSON 快照後，會直接取代目前的畫布與留言內容。'
+    const CLOUD_TEXT =
+      '匯入 JSON 快照後，會直接取代目前的畫布內容。雲端專案的留言不受影響，檔案裡的留言也不會被匯入。'
+
+    function bodyText(): string {
+      return document.body.querySelector('.document-import-dialog__text')?.textContent?.trim() ?? ''
+    }
+
+    it('沒有傳 cloud 時是本機草稿的說明：畫布與留言都會被取代', async () => {
+      await mountDialog()
+      expect(bodyText()).toBe(LOCAL_TEXT)
+    })
+
+    it('cloud=false 與沒有傳相同', async () => {
+      await mountDialog({ cloud: false })
+      expect(bodyText()).toBe(LOCAL_TEXT)
+    })
+
+    it('cloud=true 時說明只取代畫布，雲端留言不受影響、檔案裡的留言不會被匯入', async () => {
+      await mountDialog({ cloud: true })
+      expect(bodyText()).toBe(CLOUD_TEXT)
     })
   })
 

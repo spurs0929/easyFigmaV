@@ -45,9 +45,20 @@ const statusTooltip = computed(() => {
 })
 
 /**
+ * 匯出按鈕的說明。雲端專案匯出的是畫布快照，留言是後端的獨立資源，不在檔案裡——
+ * 不講清楚的話，使用者會以為這份 JSON 是包含留言的完整備份。
+ */
+const exportTooltip = computed(() =>
+  documentStore.isCloud ? '匯出畫布為 JSON（不含雲端留言）' : '匯出目前文件為 JSON',
+)
+
+/**
  * 存到雲端：一次性複製，不是持續同步。
  * 建立成功後就導向 /p/:id，之後的自動儲存由雲端 backend 接手，
  * 本機草稿留在 IndexedDB 不動——兩條路徑各自獨立，沒有合併問題。
+ *
+ * 送出的是 buildCloudSnapshot() 而不是 buildSnapshot()：本機留言不跟著過去，
+ * 雲端專案的 document 不保存留言。
  */
 async function saveToCloud(): Promise<void> {
   if (!auth.isAuthenticated) {
@@ -57,7 +68,7 @@ async function saveToCloud(): Promise<void> {
 
   uploading.value = true
   try {
-    const id = await projects.create(documentStore.buildSnapshot())
+    const id = await projects.create(documentStore.buildCloudSnapshot())
     if (id) void router.push(`/p/${id}`)
   } finally {
     uploading.value = false
@@ -101,7 +112,7 @@ async function onImportChange(event: Event): Promise<void> {
 
     <button
       v-tooltip.right="{
-        value: '匯出目前文件為 JSON',
+        value: exportTooltip,
         showDelay: TOOLTIP_DELAY.action,
         pt: TOOLBAR_TOOLTIP_PT,
       }"
@@ -142,7 +153,7 @@ async function onImportChange(event: Event): Promise<void> {
     <button
       v-if="!documentStore.isCloud"
       v-tooltip.right="{
-        value: '把目前的草稿複製一份到雲端專案',
+        value: '把目前的畫布複製一份到雲端專案（不含留言）',
         showDelay: TOOLTIP_DELAY.action,
         pt: TOOLBAR_TOOLTIP_PT,
       }"
@@ -181,6 +192,7 @@ async function onImportChange(event: Event): Promise<void> {
     <DocumentImportDialog
       v-model:visible="importDialogVisible"
       :loading="importInProgress"
+      :cloud="documentStore.isCloud"
       :error-message="importErrorMessage"
       @choose-file="chooseImportFile"
     />

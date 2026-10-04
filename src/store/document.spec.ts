@@ -6,7 +6,11 @@ import type { DocumentBackend } from '@/services/documentBackend'
 import { useCommentStore } from '@/store/comment'
 import { useDocumentStore } from '@/store/document'
 import { useElementStore } from '@/store/element'
-import { DOCUMENT_SNAPSHOT_VERSION, type DocumentSnapshot } from '@/types/document'
+import {
+  DOCUMENT_SNAPSHOT_VERSION,
+  parseDocumentSnapshot,
+  type DocumentSnapshot,
+} from '@/types/document'
 import { ElementKind, type CanvasElement } from '@/types/element'
 
 // 雲端留言走自己的 API。這個檔案測的是 document 的持久化，留言的請求一律用假的，
@@ -689,6 +693,108 @@ describe('雲端專案的留言與 document 解耦', () => {
 
     expect(commentStore.source).toBe('local')
     expect(commentStore.comments).toEqual([])
+  })
+})
+
+/**
+ * 執行 exportJson 並取回實際被下載的 JSON。
+ *
+ * jsdom 沒有 URL.createObjectURL，而 exportJson 正是把 Blob 交給它。這裡把它換成
+ * 會記下 Blob 的假函式——斷言的對象是「使用者真的會拿到的檔案內容」，
+ * 不是 buildSnapshot() 的回傳值。
+ */
+async function exportedJson(): Promise<DocumentSnapshot> {
+  let exported: Blob | null = null
+  const createObjectURL = vi.fn((blob: Blob) => {
+    exported = blob
+    return 'blob:exported'
+  })
+  vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+  // jsdom 的 <a>.click() 會嘗試導覽到 blob: 網址，那不是這裡要測的事。
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  try {
+    await useDocumentStore().exportJson()
+  } finally {
+    click.mockRestore()
+    vi.unstubAllGlobals()
+  }
+
+  if (!exported) throw new Error('exportJson 沒有產生檔案')
+  const text = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(exported as Blob)
+  })
+  return JSON.parse(text) as DocumentSnapshot
+}
+
+describe('匯出 JSON 的留言範圍', () => {
+  it('本機草稿匯出的 JSON 包含本機留言', async () => {
+    const documentStore = useDocumentStore()
+    await documentStore.startPersistence(fakeLocalBackend(snapshotFor('LOCAL', 500)).backend)
+    await addLocalComment(10, 10, '新的本機留言')
+
+    const exported = await exportedJson()
+
+    expect(exported.comments.map((c) => c.text)).toEqual(['LOCAL', '新的本機留言'])
+    expect(Object.keys(exported.elements.byId)).toEqual(['r-LOCAL'])
+  })
+
+  it('雲端專案匯出的 JSON 是畫布快照，不包含雲端留言', async () => {
+    const documentStore = useDocumentStore()
+    await documentStore.startPersistence(fakeCloudBackend().backend)
+    await loadServerComments([commentDto('c-server'), commentDto('c-other')])
+    expect(useCommentStore().comments).toHaveLength(2)
+
+    const exported = await exportedJson()
+
+    // 格式沒變：comments 欄位還在，檔案仍然可以匯入本機草稿或另一個專案
+    expect(exported.comments).toEqual([])
+    expect(Object.keys(exported.elements.byId)).toEqual(['r-cloud'])
+    expect(parseDocumentSnapshot(exported)).not.toBeNull()
+  })
+})
+
+describe('存到雲端的快照（buildCloudSnapshot）', () => {
+  it('本機草稿有留言時，雲端快照的 comments 仍然是空陣列，畫布內容照常帶上', async () => {
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+    await documentStore.startPersistence(fakeLocalBackend(snapshotFor('LOCAL', 500)).backend)
+    await addLocalComment(10, 10, '新的本機留言')
+    expect(commentStore.source).toBe('local')
+
+    const cloud = documentStore.buildCloudSnapshot()
+
+    expect(cloud.comments).toEqual([])
+    expect(Object.keys(cloud.elements.byId)).toEqual(['r-LOCAL'])
+    expect(cloud.elements.rootIds).toEqual(['r-LOCAL'])
+  })
+
+  it('不影響本機草稿：留言還在畫面上，本機快照也照常帶著留言', async () => {
+    const documentStore = useDocumentStore()
+    const commentStore = useCommentStore()
+    await documentStore.startPersistence(fakeLocalBackend(snapshotFor('LOCAL', 500)).backend)
+
+    documentStore.buildCloudSnapshot()
+
+    expect(commentStore.comments.map((c) => c.text)).toEqual(['LOCAL'])
+    expect(documentStore.buildSnapshot().comments.map((c) => c.text)).toEqual(['LOCAL'])
+  })
+
+  it('格式與版本不變：通過 parseDocumentSnapshot，version 仍是目前的快照版本', async () => {
+    const documentStore = useDocumentStore()
+    await documentStore.startPersistence(fakeLocalBackend(snapshotFor('LOCAL', 500)).backend)
+
+    const cloud = documentStore.buildCloudSnapshot()
+
+    expect(DOCUMENT_SNAPSHOT_VERSION).toBe(1)
+    expect(cloud.version).toBe(DOCUMENT_SNAPSHOT_VERSION)
+    // 與後端交換的是序列化之後的樣子，所以先過一次 JSON 再驗證
+    const parsed = parseDocumentSnapshot(JSON.parse(JSON.stringify(cloud)))
+    expect(parsed).not.toBeNull()
+    expect(parsed!.comments).toEqual([])
+    expect(Object.keys(parsed!.elements.byId)).toEqual(['r-LOCAL'])
   })
 })
 
