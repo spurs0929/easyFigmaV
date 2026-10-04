@@ -59,7 +59,13 @@ export const useDocumentStore = defineStore('document', () => {
   // 要能無縫恢復——重建 watcher 還要重新處理 _hydrating 的時序。
   let _conflicted = false
 
-  /** 從 elementStore 與 commentStore 各取深拷貝，組合成一份完整的快照物件。 */
+  /**
+   * 從 elementStore 與 commentStore 各取深拷貝，組合成一份完整的快照物件。
+   *
+   * 雲端專案的快照裡 comments 永遠是空陣列（commentStore.snapshot() 在雲端來源時
+   * 回傳 []）：雲端留言是後端的獨立資源，不屬於 document。欄位本身留著是因為
+   * 快照格式沒有變——本機草稿仍然把留言存在這裡。
+   */
   function buildSnapshot(): DocumentSnapshot {
     return {
       version: DOCUMENT_SNAPSHOT_VERSION,
@@ -72,6 +78,9 @@ export const useDocumentStore = defineStore('document', () => {
   /**
    * 將快照資料套用至各 store；以 _hydrating 旗標包住，
    * 防止 loadSnapshot / replaceAll 觸發 documentRevision 而引發不必要的自動存檔。
+   *
+   * 雲端專案時 commentStore.replaceAll() 不做任何事：快照裡的 comments（舊版留下的、
+   * 或匯入的 JSON 帶進來的）不會變成畫面上的留言，雲端留言只來自 commentStore.load()。
    */
   async function applySnapshot(snapshot: DocumentSnapshot): Promise<void> {
     _hydrating = true
@@ -231,9 +240,14 @@ export const useDocumentStore = defineStore('document', () => {
     _backend = backend
     backendKind.value = backend.kind
     persistenceAvailable.value = backend.available
-    // 必須在 load 之前：雲端 load 的 replaceAll 就會寫 localStorage。雲端期間任何
-    // 路徑（包含直接關分頁時的 lifecycle flush）都不能把雲端留言留在這台電腦上。
-    commentStore.setStorageMirror(backend.kind === 'local')
+    // 必須在 load 之前：切到雲端會清掉 store 裡的本機留言，否則載入期間畫布上
+    // 顯示的是本機草稿的留言。雲端期間任何路徑（包含直接關分頁時的 lifecycle
+    // flush）也都不能把雲端留言寫進這台電腦的 localStorage。
+    //
+    // 這裡只切換來源。雲端留言的載入由 EditorView 在文件載入成功後觸發
+    // （commentStore.load），與 presence 同一個時機——專案不存在或沒有權限時，
+    // 不需要再送一個註定失敗的請求。
+    commentStore.setSource(backend.kind)
 
     const loaded = await loadPersistedDocument(backend, generation)
     // 第二道檢查。上面那道擋的是「套用內容」，這道擋的是「註冊資源」——
@@ -292,11 +306,13 @@ export const useDocumentStore = defineStore('document', () => {
     // watcher 也已經停掉，清空觸發的 documentRevision 不會再排程 autosave。
     if (leavingCloud) {
       elementStore.loadSnapshot({ byId: {}, rootIds: [] })
-      // mirror 此時仍是關閉的，所以清空不會寫 localStorage，本機原有的 mirror 不會被刪。
-      commentStore.replaceAll([])
-      // 清空之後才恢復 mirror：恢復時 comment store 會從 localStorage 重新讀回本機留言，
-      // 讓 SPA 內回到 `/` 的狀態與重新整理後一致。順序反過來，雲端留言會被寫進 mirror。
-      commentStore.setStorageMirror(true)
+      // 留言一併換回本機來源：雲端留言從 store 清掉、飛行中的留言請求全部作廢，
+      // 並從 localStorage 重新讀回本機留言，讓 SPA 內回到 `/` 的狀態與重新整理後一致。
+      // 這一步不寫 localStorage，本機原有的 mirror 不會被動到。
+      //
+      // 同樣必須排在 flushPendingSave 之後：那次存檔的快照要在來源還是雲端時建立，
+      // comments 才會是空的；先切回本機的話，本機留言會被存進雲端專案的 document。
+      commentStore.setSource('local')
     }
     _started = false
     _conflicted = false

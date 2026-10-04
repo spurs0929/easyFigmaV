@@ -5,10 +5,12 @@ import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
 import type { PresenceStatus } from '@/types/presence'
 
 /**
- * 驗證 EditorView 什麼時候連 / 斷 presence。
+ * 驗證 EditorView 什麼時候連 / 斷 presence，以及什麼時候載入雲端留言。
  *
  * document store 以假物件取代，由測試決定載入成功與否、何時完成；
  * presence store 用真的，底下的 presenceClient 則換成只記錄呼叫的假物件。
+ * comment store 也用真的，只把 load 換成 spy——這裡要驗的是「何時呼叫」，
+ * 載入本身的行為在 comment.spec.ts。
  */
 const fake = vi.hoisted(() => {
   const client = {
@@ -49,6 +51,7 @@ vi.mock('@/components/properties/PropertiesPanel.vue', () => ({ default: Empty }
 
 const { default: EditorView } = await import('@/views/EditorView.vue')
 const { usePresenceStore } = await import('@/store/presence')
+const { useCommentStore } = await import('@/store/comment')
 
 const PROJECT_A = '11111111-1111-1111-1111-111111111111'
 const PROJECT_B = '22222222-2222-2222-2222-222222222222'
@@ -187,5 +190,101 @@ describe('EditorView presence 生命週期', () => {
     wrapper.unmount()
     expect(fake.documentStore.stopPersistence).toHaveBeenCalledOnce()
     consoleError.mockRestore()
+  })
+})
+
+describe('EditorView 雲端留言的載入時機', () => {
+  function spyOnCommentLoad() {
+    return vi.spyOn(useCommentStore(), 'load').mockResolvedValue(true)
+  }
+
+  beforeEach(() => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    vi.clearAllMocks()
+    fake.client.status = { state: 'idle' }
+    fake.client.connect.mockReset()
+    fake.documentStore.startPersistence.mockResolvedValue(true)
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+  })
+
+  afterEach(() => {
+    while (wrappers.length) wrappers.pop()?.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('雲端專案的文件載入成功後才載入留言', async () => {
+    const loadComments = spyOnCommentLoad()
+    const load = deferred<boolean>()
+    fake.documentStore.startPersistence.mockReturnValue(load.promise)
+
+    mountEditor(PROJECT_A)
+    await flushPromises()
+    // 文件還沒回來：專案存不存在、有沒有權限都還不知道
+    expect(loadComments).not.toHaveBeenCalled()
+
+    load.resolve(true)
+    await flushPromises()
+    expect(loadComments).toHaveBeenCalledExactlyOnceWith(PROJECT_A)
+  })
+
+  it('本機草稿不載入雲端留言', async () => {
+    const loadComments = spyOnCommentLoad()
+
+    mountEditor(null)
+    await flushPromises()
+
+    expect(loadComments).not.toHaveBeenCalled()
+  })
+
+  it('專案載入失敗（404、無權限）不載入留言', async () => {
+    const loadComments = spyOnCommentLoad()
+    fake.documentStore.startPersistence.mockResolvedValue(false)
+
+    mountEditor(PROJECT_A)
+    await flushPromises()
+
+    expect(loadComments).not.toHaveBeenCalled()
+  })
+
+  it('載入完成前就離開，晚到的結果不會補載入留言', async () => {
+    const loadComments = spyOnCommentLoad()
+    const load = deferred<boolean>()
+    fake.documentStore.startPersistence.mockReturnValue(load.promise)
+
+    const wrapper = mountEditor(PROJECT_A)
+    wrapper.unmount()
+    load.resolve(true)
+    await flushPromises()
+
+    expect(loadComments).not.toHaveBeenCalled()
+  })
+
+  it('A → B：各自載入自己的留言', async () => {
+    const loadComments = spyOnCommentLoad()
+
+    const a = mountEditor(PROJECT_A)
+    await flushPromises()
+    a.unmount()
+    mountEditor(PROJECT_B)
+    await flushPromises()
+
+    expect(loadComments.mock.calls).toEqual([[PROJECT_A], [PROJECT_B]])
+  })
+
+  it('留言載入失敗不影響編輯器，presence 也照常連線', async () => {
+    // load 自己會接住錯誤並回傳 false（錯誤訊息放在 store 裡），不會 reject
+    vi.spyOn(useCommentStore(), 'load').mockResolvedValue(false)
+
+    const wrapper = mountEditor(PROJECT_A)
+    await flushPromises()
+
+    expect(wrapper.find('.app-layout').exists()).toBe(true)
+    expect(fake.client.connect).toHaveBeenCalledWith(PROJECT_A)
   })
 })

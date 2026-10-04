@@ -143,13 +143,6 @@ export const useCommentStore = defineStore('comment', () => {
    */
   const source = ref<CommentSource>('local')
 
-  /**
-   * 是否把評論鏡像到 localStorage。只是一個開關，store 不知道開關的理由；
-   * 由 documentStore 依持久化目標決定（雲端專案期間關閉）。
-   * 刻意放在 store 內而非模組層級：重新建立的 store（HMR、新的 Pinia）一律從開啟開始。
-   */
-  let _storageMirrorEnabled = true
-
   /** 雲端來源目前對應的專案。load() 設定，離開雲端時清掉。 */
   let _projectId: string | null = null
 
@@ -212,21 +205,8 @@ export const useCommentStore = defineStore('comment', () => {
    * 雲端來源一律不寫：雲端留言不能留在這台電腦上。
    */
   function flush(): void {
-    if (source.value !== 'local' || !_storageMirrorEnabled) return
+    if (source.value !== 'local') return
     writeToStorage(cloneCommentSnapshots(_comments.value))
-  }
-
-  /**
-   * 開關 localStorage mirror。
-   *
-   * 關閉 → 開啟時從 localStorage 重新讀回評論：關閉期間 store 內容與 mirror 已經分岔，
-   * 只恢復開關的話，下一次 flush（切個分頁就會觸發）會拿 store 的內容覆蓋、甚至刪掉 mirror。
-   * 重新讀取不寫回 localStorage，也不 touchDocument——這是還原，不是一次編輯。
-   */
-  function setStorageMirror(enabled: boolean): void {
-    if (enabled === _storageMirrorEnabled) return
-    _storageMirrorEnabled = enabled
-    if (enabled) _comments.value = loadFromStorage().map(toLocalView)
   }
 
   /**
@@ -439,25 +419,6 @@ export const useCommentStore = defineStore('comment', () => {
   }
 
   /**
-   * 在世界座標新增一則評論，立即持久化並返回新建物件。
-   * @param worldX 世界座標 X（未經 viewport 縮放）
-   * @param worldY 世界座標 Y（未經 viewport 縮放）
-   */
-  function add(worldX: number, worldY: number): CommentView {
-    const comment = toLocalView({
-      id: newCommentId(),
-      worldX,
-      worldY,
-      text: '',
-      resolved: false,
-      createdAt: Date.now(),
-    })
-    _comments.value.push(comment)
-    commitLocalChange()
-    return comment
-  }
-
-  /**
    * 送出草稿。成功後草稿消失、留言出現在列表裡；失敗時草稿原樣保留，
    * 輸入框的文字也還在，錯誤訊息在 error。
    */
@@ -608,10 +569,8 @@ export const useCommentStore = defineStore('comment', () => {
     error,
     pending,
     setSource,
-    setStorageMirror,
     load,
     reload,
-    add,
     startDraft,
     open,
     close,
