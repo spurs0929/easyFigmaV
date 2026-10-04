@@ -881,6 +881,41 @@ function registerStageEvents(): void {
   })
 }
 
+// ── Presence cursor ────────────────────────────────────────────────────────────
+
+/** 上一次回報時滑鼠是否在畫布範圍內。只用來讓「離開」只送一次。 */
+let _cursorOnCanvas = false
+
+/**
+ * 回報自己的游標給其他在線成員。節流、以及本機草稿 / 未連線時不送，都在 presence 那一層。
+ *
+ * 「在不在畫布上」以畫布的矩形判斷，而不是看滑鼠底下是哪個 DOM 元素：留言圖釘、
+ * 留言框、文字編輯框、右鍵選單都 Teleport 到 body、疊在畫布上面，滑鼠移到它們
+ * 上面時，畫布容器會收到 mouseleave、Konva 也不再收到 mousemove，但使用者其實
+ * 還在畫布上操作。那些元素用 DOM 還是用 Konva 實作，不該改變別人看到的游標。
+ *
+ * 所以聽的是 document 的 mousemove，而不是 Stage 的。
+ */
+function reportCursor(e: MouseEvent): void {
+  // 與覆疊層共用同一份矩形（由 ResizeObserver / resize / scroll 維護），不必每次移動都量版面。
+  const rect = commentOverlayRect.value
+  const x = e.clientX - rect.left
+  const y = e.clientY - rect.top
+  if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) {
+    reportCursorLeft()
+    return
+  }
+  _cursorOnCanvas = true
+  presenceStore.updateCursor(viewportStore.toWorld(x, y))
+}
+
+/** 滑鼠到了畫布以外（側邊面板、工具列），或離開了整個視窗。 */
+function reportCursorLeft(): void {
+  if (!_cursorOnCanvas) return
+  _cursorOnCanvas = false
+  presenceStore.updateCursor(null)
+}
+
 function onContainerWheel(e: WheelEvent): void {
   e.preventDefault()
 }
@@ -1034,9 +1069,6 @@ function startDrawing(tool: ToolType, world: Point): void {
 }
 
 function onMouseMove(): void {
-  // 回報自己的游標位置。節流、以及本機草稿 / 未連線時不送，都在 presence 那一層處理。
-  presenceStore.updateCursor(pointerWorld())
-
   const g = _gesture
 
   if (g.kind === 'panning') {
@@ -1316,6 +1348,9 @@ onMounted(() => {
   document.addEventListener('keydown', keyboard.onKeydown)
   document.addEventListener('keyup', keyboard.onKeyup)
   document.addEventListener('click', closeContextMenu)
+  document.addEventListener('mousemove', reportCursor)
+  // 滑鼠移出視窗時不會再有 mousemove，要另外聽。
+  document.documentElement.addEventListener('mouseleave', reportCursorLeft)
   window.addEventListener('resize', syncCommentOverlayRect)
   window.addEventListener('scroll', syncCommentOverlayRect, true)
   containerRef.value?.addEventListener('wheel', onContainerWheel, { passive: false })
@@ -1332,6 +1367,8 @@ onUnmounted(() => {
   document.removeEventListener('keydown', keyboard.onKeydown)
   document.removeEventListener('keyup', keyboard.onKeyup)
   document.removeEventListener('click', closeContextMenu)
+  document.removeEventListener('mousemove', reportCursor)
+  document.documentElement.removeEventListener('mouseleave', reportCursorLeft)
   window.removeEventListener('resize', syncCommentOverlayRect)
   window.removeEventListener('scroll', syncCommentOverlayRect, true)
   containerRef.value?.removeEventListener('wheel', onContainerWheel)
@@ -1339,12 +1376,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div
-    ref="containerRef"
-    class="canvas-container"
-    @contextmenu.prevent="onContainerContextMenu"
-    @mouseleave="presenceStore.updateCursor(null)"
-  >
+  <div ref="containerRef" class="canvas-container" @contextmenu.prevent="onContainerContextMenu">
     <!-- 右鍵選單：Teleport 至 body 避免與 Konva DOM 衝突 -->
     <SelectionContextMenu :context-menu="contextMenu" @close="closeContextMenu" />
 
