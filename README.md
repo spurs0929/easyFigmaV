@@ -1,156 +1,396 @@
 # easyFigmaV
 
-- 目前是一個以 Vue 3、Pinia、Konva、PrimeVue 為核心的 Figma-like 畫布編輯器。
-- 畫面骨架已經成形，包含工具列、圖層面板、主畫布、屬性面板。
-- 互動重點已放在畫布編輯、圖形建立、文字編輯、圖層操作與評論流程。
+easyFigmaV 是一個以 **Vue 3 + TypeScript + Konva** 建構編輯器前端，並以
+**FastAPI + PostgreSQL** 提供帳號、雲端專案、成員授權、留言與 Presence
+能力的 Figma-like 全端專案。
 
-## 目前已實作的功能
+專案除了畫布編輯，也實作 Authentication、Cloud Persistence、Membership
+Authorization、Comments、WebSocket Presence、CI 與 Observability。
 
-### 1. 編輯器基本骨架
+> 目前多人功能定位為 **Presence（在線成員狀態）**，不是 CRDT /
+> Operation-based 的多人即時共同編輯。
 
-- 已完成四欄式編輯器版面：
-  - Toolbar
-  - Layer Panel
-  - Canvas
-  - Properties Panel
-- 專案目前是單頁式編輯器，主要操作集中在同一個畫布畫面中。
+---
 
-### 2. 工具列與工具切換
+## Features
 
-- 已有工具群組與子工具下拉選單。
-- 每個工具群組會記住最後一次使用的子工具。
-- 已支援快捷鍵切換工具。
-- `Space` 可暫時切換成 Hand 工具。
-- 目前可看到並切換的主要工具包含：
-  - Move
-  - Region Select
-  - Rectangle
-  - Ellipse
-  - Line
-  - Polygon
-  - Star
-  - Frame
-  - Pen
-  - Pencil
-  - Text
-  - Comment
-  - Hand
+### Canvas Editor
 
-### 3. 畫布操作與視窗控制
+- 以 Konva 建構支援縮放、平移與縮放感知格線的畫布。
+- 支援 Rectangle、Frame、Ellipse、Line、Polygon、Star、Text。
+- 支援 Pen 向量路徑、閉合路徑與 Bezier 控制點預覽。
+- 支援 Pencil 自由手繪並轉換為 Vector 元素。
+- 支援單選、多選、框選、拖曳、resize。
+- 支援 Group / Ungroup、Duplicate、Delete 與圖層順序調整。
+- Layer Panel 使用 `byId + rootIds` 管理元素樹狀結構。
+- Properties Panel 支援位置、尺寸、旋轉、透明度、Fill、Stroke 與
+  Typography。
+- 支援畫布內文字直接編輯。
+- 支援 snapshot-based Undo / Redo。
+- 支援對齊輔助線、距離量測與 viewport culling。
+- 提供常用編輯器快捷鍵與暫時 Hand 工具操作。
 
-- 已完成 Konva Stage 初始化。
-- 已用 `ResizeObserver` 同步畫布容器尺寸。
-- 已支援滑鼠拖移平移畫布。
-- 已支援 `Ctrl/Cmd + 滾輪` 縮放畫布。
-- 已支援一般滾輪平移。
-- 已有縮放感知的背景格線。
-- 格線顯示有 hysteresis 邏輯，避免在臨界縮放值來回閃爍。
-- 已有 viewport culling，會只渲染可視範圍附近元素，降低重繪成本。
+### Authentication
 
-### 4. 元素建立與繪製
+- Email / Password 註冊與登入。
+- 密碼使用 Argon2id 雜湊。
+- 使用短效 JWT Access Token，前端僅保存在記憶體。
+- Refresh Token 使用 HttpOnly Cookie，Server 保存 token hash。
+- 支援 Refresh Token Rotation、token family 與 replay handling。
+- 前端支援 silent refresh、single-flight refresh 與 session
+  bootstrap。
+- Session generation guard 避免延遲中的 refresh
+  在登出後重新建立登入狀態。
+- 區分 refresh concurrency、session invalidation 與暫時性網路 / server
+  failure。
 
-- 已可建立下列圖形元素：
-  - Rectangle
-  - Frame
-  - Ellipse
-  - Line
-  - Polygon
-  - Star
-  - Text
-- 已支援 Pen 工具建立向量路徑。
-- Pen 已支援閉合路徑與 Bezier 控制點預覽。
-- 已支援 Pencil 自由手繪，並轉成 Vector 元素。
-- 文字元素可直接在畫布上建立，建立後會自動進入編輯狀態。
+### Cloud Projects
 
-### 5. 選取、移動、框選與尺寸調整
+- 支援本機草稿與登入後的雲端專案。
+- 雲端文件以 PostgreSQL `JSONB` 持久化。
+- Backend 將文件視為 opaque document，畫布結構由 Frontend 負責。
+- 使用 `document_version` 實作 optimistic concurrency control。
+- 文件更新使用 atomic conditional update；版本過期時回傳 conflict。
+- 前端自動儲存採 single-flight + latest-value coalescing，避免並行
+  save request 互相覆蓋。
+- 使用 generation guard 防止切換專案後舊的非同步操作污染新專案。
 
-- 已支援單選與多選。
-- 已支援框選（marquee selection）。
-- 已支援拖曳移動元素。
-- 已支援單一選取元素的四角 resize。
-- 已有選取外框與控制點顯示。
-- 已有根節點選取邏輯，群組內子元素操作時會回到可操作的 root selection。
+### Project Membership
 
-### 6. 圖層與結構管理
+- 專案支援 Owner / Member。
+- `projects.owner_id` 是 Owner 的唯一真實來源；Owner 不重複存入
+  membership table。
+- Owner 可邀請既有使用者加入專案及移除成員。
+- Owner 與 Member 可存取、編輯專案文件。
+- 刪除專案與成員管理等 Owner-only 操作具有額外授權檢查。
+- REST API 與 WebSocket 使用一致的 membership-based authorization
+  boundary。
+- 對 outsider 隱藏資源存在性；已知專案存在但權限不足的 Member
+  依操作回傳權限錯誤。
 
-- 已有以 `byId + rootIds` 為核心的元素樹狀資料結構。
-- 已支援群組與取消群組。
-- Group 邊界會依子元素重新計算。
-- 已支援圖層順序操作：
-  - Bring to Front
-  - Send to Back
-  - Move Up
-  - Move Down
-- 已支援 Duplicate。
-- 已支援 Delete。
-- 已支援 Select All。
-- Layer Panel 已支援：
-  - 樹狀展開 / 收合
-  - 選取
-  - Shift 範圍選取
-  - 右鍵操作入口
+### Comments
 
-### 7. 屬性面板
+- 支援在畫布指定位置建立 Comment pin。
+- 支援留言建立、更新、刪除與 resolved / unresolved 狀態。
+- 雲端專案留言由 Backend 持久化，並沿用 Project Membership
+  authorization。
+- API 與資料庫層共同限制空白留言內容。
+- DELETE 會檢查實際 affected
+  row，處理讀取留言後至刪除前可能發生的競態。
+- 本機草稿與雲端專案的留言資料邊界分離，避免雲端資料污染本機草稿。
 
-- 目前針對「單一選取元素」提供屬性編輯。
-- 已可調整：
-  - X / Y
-  - Width / Height
-  - Rotation
-  - Opacity
-  - Fill
-  - Stroke
-  - Stroke Width
-- Text 已支援 Typography 設定：
-  - Font Family
-  - Font Weight
-  - Font Size
-  - Line Height
-  - Letter Spacing
-  - Text Align
+### Online Presence
 
-### 8. 文字編輯體驗
+- 使用 WebSocket 顯示目前正在同一雲端專案中的成員。
+- WebSocket 採 first-message authentication，Access Token 不放在 URL。
+- 進行 Origin validation，補足一般 HTTP CORS middleware 不涵蓋
+  WebSocket 的邊界。
+- PresenceManager 以 `project → user → connections`
+  管理連線，多分頁不重複計算使用者。
+- Server 傳送完整 Presence snapshot，Client 使用 `seq` 過濾舊狀態。
+- Client 支援斷線重連、backoff 與 authentication refresh。
+- Presence 故障與 Editor 核心功能隔離，不讓即時狀態服務阻斷文件編輯。
 
-- 已支援雙擊文字進入編輯。
-- 已用 overlay textarea 方式處理畫布上的文字輸入。
-- 文字輸入時會同步字型、字重、大小、對齊等視覺樣式。
-- 空白文字在提交時會自動刪除，避免留下空元素。
+---
 
-### 9. 評論功能
+## Architecture
 
-- 已支援 Comment 工具在畫布上放置 pin。
-- Comment pin 可開啟 popover 編輯內容。
-- 已支援評論文字更新。
-- 已支援評論標記為 resolved / unresolved。
-- 已支援刪除評論。
-- 評論資料目前會寫入 `localStorage`，重新整理後仍可保留。
+```mermaid
+flowchart LR
+    U[Browser]
 
-### 10. 快捷鍵與互動輔助
+    subgraph FE["Vue 3 Client"]
+        UI[Editor UI]
+        STORE[Pinia Stores]
+        AUTH[Auth Client]
+        DOC[Document Backend]
+        PC[Presence Client]
+    end
 
-- 已支援常見快捷鍵：
-  - `V` Move
-  - `R` Rectangle
-  - `O` Ellipse
-  - `L` Line
-  - `F` Frame
-  - `P` Pen
-  - `Shift + P` Pencil
-  - `T` Text
-  - `C` Comment
-  - `H` Hand
-  - `Delete / Backspace` 刪除
-  - `Ctrl/Cmd + Z` Undo
-  - `Ctrl/Cmd + Y` 或 `Ctrl/Cmd + Shift + Z` Redo
-  - `Ctrl/Cmd + D` Duplicate
-  - `Ctrl/Cmd + G` Group
-  - `Ctrl/Cmd + Shift + G` Ungroup
-  - `Ctrl/Cmd + A` Select All
-  - `[` / `]` 調整圖層順序
-- 已有拖曳尺寸標示與對齊輔助線。
-- 已支援 `Alt + Hover` 顯示距離量測資訊。
+    subgraph BE["FastAPI Backend"]
+        REST[REST API]
+        AUTHAPI[Authentication]
+        PROJECT[Projects]
+        MEMBER[Membership]
+        COMMENT[Comments]
+        WS[WebSocket Endpoint]
+        PM[PresenceManager]
+    end
 
-### 11. Undo / Redo 與資料操作
+    DB[(PostgreSQL / Neon)]
+    OBS[structlog / Sentry]
 
-- 元素編輯已具備 snapshot-based Undo / Redo。
-- Store 內已有資料完整性檢查邏輯。
-- 已對群組、刪除、複製、屬性更新等行為納入操作歷史。
+    U --> UI
+    UI --> STORE
+
+    STORE --> AUTH
+    STORE --> DOC
+    STORE --> PC
+
+    AUTH -->|HTTPS| AUTHAPI
+    DOC -->|HTTPS| REST
+
+    REST --> PROJECT
+    REST --> MEMBER
+    REST --> COMMENT
+
+    AUTHAPI --> DB
+    PROJECT --> DB
+    MEMBER --> DB
+    COMMENT --> DB
+
+    PC -->|WebSocket| WS
+    WS --> PM
+    WS -. membership check .-> DB
+
+    BE -. logs / errors .-> OBS
+```
+
+### State Boundary
+
+easyFigmaV 將資料分成兩種不同生命週期：
+
+- **Durable State**：帳號、Project、Document、Membership、Comments
+  儲存在 PostgreSQL。
+- **Ephemeral State**：Presence 僅保存在單一 Backend instance
+  的記憶體中。
+
+因此 WebSocket Presence 不參與文件同步；文件仍透過 REST
+API、`document_version` 與 optimistic locking 維持一致性。
+
+---
+
+## Engineering Highlights
+
+Topic Design
+
+---
+
+Authentication Short-lived JWT + HttpOnly Refresh Token Rotation
+Password Security Argon2id
+Authorization Project membership-based authorization
+Document Consistency `document_version` optimistic locking
+Cloud Auto-save Single-flight + latest-value coalescing
+Real-time State WebSocket snapshot-based Presence
+Database PostgreSQL + SQLAlchemy 2.0 async + Alembic
+Logging structlog + Request ID correlation
+Error Monitoring Sentry with sensitive-data filtering
+CI Frontend / Backend lint, test, migration and build checks
+
+---
+
+## Tech Stack
+
+### Frontend
+
+- Vue 3
+- TypeScript
+- Vite
+- Pinia
+- Vue Router
+- PrimeVue
+- UnoCSS
+- Konva
+- Vitest
+
+### Backend
+
+- Python
+- FastAPI
+- SQLAlchemy 2.0
+- asyncpg
+- Alembic
+- PostgreSQL
+- pytest
+- Ruff
+
+### Infrastructure & Observability
+
+- Render
+- Neon
+- PgBouncer
+- GitHub Actions
+- structlog
+- Sentry
+
+---
+
+## Key Technical Decisions
+
+### Optimistic document locking
+
+雲端文件更新不採「最後寫入者直接覆蓋」。
+
+Client 更新文件時帶上目前的 `document_version`，Backend 以 expected
+version 執行 atomic update。若其他 Client 已先更新文件，舊版本寫入會收到
+conflict，而不是靜默覆蓋較新的資料。
+
+### Cloud save serialization
+
+Debounce 只能降低儲存頻率，不能保證 HTTP request 的完成順序。
+
+因此 Cloud Document Backend 同時間只允許一個 save request
+執行；儲存期間產生的新 snapshot 只保留最新值，前一個 request
+完成後再繼續儲存最新 snapshot。
+
+### Membership authorization
+
+Authentication 與 Authorization 分開處理：
+
+1.  Authentication 確認目前使用者身分。
+2.  Project access 依 `projects.owner_id` 或 membership
+    判斷是否可存取資源。
+3.  Owner-only 操作額外進行 Owner authorization。
+
+Owner 身分只存在於 `projects.owner_id`，避免同時維護 owner 欄位與
+membership row 造成兩個 truth source。
+
+### Snapshot-based Presence
+
+Presence 的目標是回答「現在有哪些成員正在這個專案裡？」，而不是同步
+Canvas operation。
+
+目前採用完整 snapshot 而非 join / leave delta：
+
+- Room 規模小，payload 成本可控。
+- Client 不需要自行重建 Presence state。
+- Reconnect 後可直接以最新 snapshot 取代舊狀態。
+- 降低 delta 遺失或順序錯亂造成狀態不一致的風險。
+
+PresenceManager 目前是單一 process 的 in-memory state，因此 v1 維持單一
+Backend instance。未來若需要 horizontal scaling，可再將 Presence state /
+transport 移至 Redis 等共享基礎設施。
+
+---
+
+## Observability
+
+Backend 使用 structured logging 與 request correlation：
+
+- 每個 HTTP request 建立 / 傳遞 Request ID。
+- Application、Uvicorn、SQLAlchemy log 進入一致的 logging pipeline。
+- Production 使用 JSON log，開發環境使用較易閱讀的輸出。
+- Sentry 僅在設定 DSN 時啟用。
+- 不設定 Sentry user context。
+- 對 credential、query parameter、proxy IP 等敏感資訊進行 scrub。
+- `client_ip` 可保留於安全用途的 Server log，但不送入 Sentry。
+
+除了單元 / 整合測試，也以實際 ASGI unhandled exception 路徑驗證 Sentry
+event、stack trace、Request ID 與敏感資料過濾。
+
+---
+
+## CI
+
+Frontend 與 Backend 使用分離的 GitHub Actions workflow。
+
+### Frontend
+
+```text
+npm ci
+→ lint
+→ type-check
+→ unit tests
+→ build
+```
+
+### Backend
+
+```text
+install dependencies
+→ Ruff
+→ Alembic upgrade
+→ Alembic migration check
+→ pytest
+```
+
+Backend CI 將 migration validation 與 pytest schema 分開，避免 Alembic
+建立的 schema 與測試環境 schema setup 互相衝突。
+
+---
+
+## Testing
+
+目前測試涵蓋的核心範圍包含：
+
+- Authentication / Refresh Token lifecycle
+- Project CRUD
+- Optimistic document update
+- Membership authorization
+- Comments
+- WebSocket authentication / Origin / Presence lifecycle
+- Frontend auth / session behavior
+- Editor stores and UI behavior
+
+WebSocket 除自動化測試外，也使用真實 Uvicorn server 進行 smoke
+test，補足測試 transport 與 production WebSocket stack
+可能不同的覆蓋缺口。
+
+---
+
+## Deployment
+
+```mermaid
+flowchart LR
+    B[Browser]
+    FE[Render Frontend]
+    API[Render FastAPI Backend]
+    DB[(Neon PostgreSQL)]
+
+    B -->|HTTPS| FE
+    B -->|HTTPS REST| API
+    B -->|WSS Presence| API
+    API --> DB
+```
+
+PostgreSQL 連線層考慮 asyncpg 與 PgBouncer transaction pooling
+的相容性；使用 pooler 時停用 asyncpg prepared statement cache。
+
+---
+
+## Current Scope
+
+easyFigmaV v1 刻意限制協作系統範圍。
+
+**目前包含：**
+
+- Cloud document persistence
+- Owner / Member authorization
+- Server-backed comments
+- Online member Presence
+- Optimistic document concurrency control
+
+**目前不包含：**
+
+- CRDT
+- Operation-based collaborative editing
+- 即時 cursor / selection synchronization
+- Redis-backed multi-instance Presence
+- 完整 RBAC
+- Invitation token / email invitation flow
+- Project ownership transfer
+
+這些限制讓 v1 先建立清楚的 Authentication、Authorization、Persistence 與
+Presence 邊界，再保留未來擴充多人即時協作的空間。
+
+---
+
+## Technical Documentation
+
+更完整的架構設計、技術決策、替代方案與 trade-offs 請參考：
+
+- [Technical Documentation](./docs/README.md)
+- [Backend Foundation](./docs/01-backend-foundation.md)
+- [Authentication](./docs/02-authentication.md)
+- [API & Deployment](./docs/03-api-and-deployment.md)
+- [Auth Security Runbook](./docs/04-auth-security-runbook.md)
+- [Frontend Authentication](./docs/05-frontend-auth.md)
+- [Project Persistence](./docs/06-project-persistence.md)
+- [Cloud Persistence](./docs/07-cloud-persistence.md)
+- [CI](./docs/08-ci.md)
+- [Observability](./docs/09-observability.md)
+- [Membership &
+  Authorization](./docs/10-membership-and-authorization.md)
+- [WebSocket Presence](./docs/11-websocket-presence.md)
+- [Comments](./docs/12-comments.md)
+- [v1 Architecture](./docs/13-v1-architecture.md)
