@@ -1,16 +1,28 @@
-import { PRESENCE_RECONNECT_BASE_DELAY_MS, PRESENCE_RECONNECT_MAX_DELAY_MS } from '@/config/app'
+import {
+  PRESENCE_CURSOR_THROTTLE_MS,
+  PRESENCE_RECONNECT_BASE_DELAY_MS,
+  PRESENCE_RECONNECT_MAX_DELAY_MS,
+} from '@/config/app'
 import { apiUrl } from '@/config/env'
 import { getAccessToken, refreshSession, type Session } from '@/services/api'
 import {
+  PRESENCE_CURSOR_LEAVE_TYPE,
+  PRESENCE_CURSOR_TYPE,
+  PRESENCE_SNAPSHOT_TYPE,
   PresenceCloseCode,
+  parsePresenceCursor,
   parsePresenceSnapshot,
+  presenceMessageType,
+  type CursorPoint,
+  type PresenceCursorMessage,
   type PresenceSnapshot,
   type PresenceStatus,
   type PresenceStopReason,
 } from '@/types/presence'
 
-// Presence WebSocket 的連線、認證與重連。只負責 transport，不碰 Pinia 與 UI：
-// 狀態透過 onStatusChange / onSnapshot 往外送，由上層決定怎麼呈現。
+// Presence WebSocket 的連線、認證、重連，以及游標訊息的收送。只負責 transport，
+// 不碰 Pinia 與 UI：狀態透過 onStatusChange / onSnapshot / onCursor 往外送，
+// 由上層決定怎麼呈現。
 //
 // 同一個 instance 同時只維護一個專案的連線。connect(B) 會先讓 A 的整個生命週期
 // 失效，不存在兩條並存的 socket，重連、seq 與 auth recovery 因此都只需要處理一份。
@@ -88,8 +100,16 @@ export class PresenceClient {
   /** 這一輪是否已經用掉那唯一一次 4401 refresh。同樣在認證成功時歸零。 */
   private authRecoveryUsed = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 游標節流的視窗。不是 null 代表剛送過一則，這段時間內的更新只會留在
+   * pendingCursor，視窗結束時再送出。
+   */
+  private cursorTimer: ReturnType<typeof setTimeout> | null = null
+  /** 節流視窗內最新的一次更新。undefined = 沒有；null = 游標離開畫布。 */
+  private pendingCursor: CursorPoint | null | undefined = undefined
 
   private readonly snapshotListeners = new Set<Listener<PresenceSnapshot>>()
+  private readonly cursorListeners = new Set<Listener<PresenceCursorMessage>>()
   private readonly statusListeners = new Set<Listener<PresenceStatus>>()
 
   constructor(deps: Partial<PresenceClientDeps> = {}) {
@@ -109,6 +129,18 @@ export class PresenceClient {
   onSnapshot(listener: Listener<PresenceSnapshot>): () => void {
     this.snapshotListeners.add(listener)
     return () => this.snapshotListeners.delete(listener)
+  }
+
+  /**
+   * 訂閱其他使用者的游標（移動與離開）。只會收到通過驗證、屬於目前專案、
+   * 而且是在連線已認證之後抵達的訊息。回傳取消訂閱的函式。
+   *
+   * 不保證 user_id 在目前的在線名單裡：游標與 snapshot 的抵達順序沒有保證，
+   * 名單屬於上層的狀態，由訂閱者自己比對。
+   */
+  onCursor(listener: Listener<PresenceCursorMessage>): () => void {
+    this.cursorListeners.add(listener)
+    return () => this.cursorListeners.delete(listener)
   }
 
   /** 訂閱連線狀態。回傳取消訂閱的函式。 */
@@ -144,6 +176,42 @@ export class PresenceClient {
     this.setStatus({ state: 'idle' })
   }
 
+  /**
+   * 回報自己的游標：world 座標，或 null 表示游標離開了畫布。
+   *
+   * 可以在每個 mousemove 都呼叫。節流在這裡：第一次立刻送出，之後
+   * PRESENCE_CURSOR_THROTTLE_MS 內的更新只保留最新的一個，視窗結束時補送。
+   * 移動與離開共用同一格，所以最後送出的一定是最後的狀態。
+   *
+   * 連線尚未認證、重連中或已停止時直接丟棄，不排隊：游標是當下的狀態，
+   * 等連線恢復再送出幾秒前的位置沒有意義，下一次移動自然會送出新的。
+   */
+  updateCursor(point: CursorPoint | null): void {
+    const socket = this.socket
+    if (socket === null || this.currentStatus.state !== 'connected') return
+    // server 會把非有限的座標當成協定錯誤（4400）而關閉連線，那會連在線名單一起停掉。
+    if (point !== null && !(Number.isFinite(point.x) && Number.isFinite(point.y))) return
+
+    if (this.cursorTimer !== null) {
+      this.pendingCursor = point
+      return
+    }
+
+    socket.send(
+      JSON.stringify(
+        point === null ? { type: 'cursor.leave' } : { type: 'cursor.move', x: point.x, y: point.y },
+      ),
+    )
+    this.cursorTimer = setTimeout(() => {
+      this.cursorTimer = null
+      const pending = this.pendingCursor
+      this.pendingCursor = undefined
+      // 重新走一次 updateCursor：這段時間連線可能已經斷了，由它判斷還能不能送；
+      // 送出的話也會開始下一個視窗，持續移動時因此維持固定的頻率。
+      if (pending !== undefined) this.updateCursor(pending)
+    }, PRESENCE_CURSOR_THROTTLE_MS)
+  }
+
   // ─────────────────────────── 內部流程 ───────────────────────────
 
   /** 關掉目前的 socket 與計時器。先放掉 socket 的身分，它的 onclose 晚到時就會被忽略。 */
@@ -152,9 +220,19 @@ export class PresenceClient {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.resetCursorThrottle()
     const socket = this.socket
     this.socket = null
     socket?.close(NORMAL_CLOSURE)
+  }
+
+  /** 丟掉還沒送出的游標。它屬於即將結束的那條連線，不該被帶到下一條。 */
+  private resetCursorThrottle(): void {
+    if (this.cursorTimer !== null) {
+      clearTimeout(this.cursorTimer)
+      this.cursorTimer = null
+    }
+    this.pendingCursor = undefined
   }
 
   private openSocket(projectId: string): void {
@@ -177,6 +255,7 @@ export class PresenceClient {
     socket.onclose = (event) => {
       if (socket !== this.socket) return
       this.socket = null
+      this.resetCursorThrottle()
       this.handleClose(projectId, event.code)
     }
   }
@@ -195,8 +274,48 @@ export class PresenceClient {
     socket.send(JSON.stringify({ type: 'auth', access_token: token }))
   }
 
+  /**
+   * 依 type 分派。三種情況的處理刻意不同：
+   *
+   * - 無法辨識成訊息（不是文字、不是 JSON、沒有字串 type）→ 停止。雙方對
+   *   「訊息長什麼樣」的理解已經不一致，繼續收下去沒有任何東西可信。
+   * - snapshot 不合法 → 停止。名單是權威狀態，壞掉就不能再顯示。
+   * - 游標訊息不合法 → 只丟掉那一則。游標是 best-effort 的輔助顯示，
+   *   一則壞掉的位置不該讓在線名單跟著消失。
+   * - 不認得的 type → 忽略。server 之後新增訊息種類時，還沒更新的 client
+   *   不會因此失去既有功能。
+   */
   private handleMessage(projectId: string, data: unknown): void {
-    const snapshot = typeof data === 'string' ? parsePresenceSnapshot(safeJsonParse(data)) : null
+    const message = typeof data === 'string' ? safeJsonParse(data) : null
+
+    switch (presenceMessageType(message)) {
+      case null:
+        this.stop(projectId, 'protocol_error')
+        return
+      case PRESENCE_SNAPSHOT_TYPE:
+        this.handleSnapshot(projectId, message)
+        return
+      case PRESENCE_CURSOR_TYPE:
+      case PRESENCE_CURSOR_LEAVE_TYPE:
+        this.handleCursor(projectId, message)
+        return
+      default:
+        return
+    }
+  }
+
+  private handleCursor(projectId: string, message: unknown): void {
+    // 第一份 snapshot 之前還不算連上（見 handleSnapshot）：這時上層沒有名單，
+    // 游標沒有對象可以對應。游標訊息也不會讓狀態變成 connected。
+    if (this.currentStatus.state !== 'connected') return
+
+    const cursor = parsePresenceCursor(message)
+    if (!cursor || cursor.project_id !== projectId) return
+    this.emit(this.cursorListeners, cursor)
+  }
+
+  private handleSnapshot(projectId: string, message: unknown): void {
+    const snapshot = parsePresenceSnapshot(message)
 
     // 這條 socket 綁定的就是這個專案，收到別的 project_id 只可能是協定或 server
     // 的 bug。不猜測、不寫入，直接停止。

@@ -43,3 +43,12 @@ export const PRESENCE_RECONNECT_BASE_DELAY_MS = 1_000
  * 放棄重連反而需要另一套 UI 讓使用者手動恢復。
  */
 export const PRESENCE_RECONNECT_MAX_DELAY_MS = 30_000
+
+/**
+ * 送出自己游標位置的最小間隔（約 20 則 / 秒）。
+ *
+ * mousemove 每秒可以觸發上百次，全部送出只是讓對方重畫他來不及看的位置。
+ * 節流只保留最新的一點：間隔內的移動不會排隊，停下來之後一定會補送最後的位置。
+ * server 沒有頻率限制，這裡是唯一的節流。
+ */
+export const PRESENCE_CURSOR_THROTTLE_MS = 50

@@ -42,7 +42,9 @@ import {
 import { cullingService } from './services/ViewportCullingService'
 import { measurementService } from './services/MeasurementService'
 import { useCommentStore } from '@/store/comment'
+import { usePresenceStore } from '@/store/presence'
 import CommentOverlay from './CommentOverlay.vue'
+import RemoteCursors from './RemoteCursors.vue'
 import SelectionContextMenu from '@/components/context-menu/SelectionContextMenu.vue'
 
 // ── Stores ─────────────────────────────────────────────────────────────────────
@@ -50,6 +52,8 @@ const elementStore = useElementStore()
 const viewportStore = useViewportStore()
 const toolStore = useToolStore()
 const commentStore = useCommentStore()
+// 只用來回報自己的游標；別人的游標由 RemoteCursors 直接向 store 取。
+const presenceStore = usePresenceStore()
 
 // ── Composables ────────────────────────────────────────────────────────────────
 const { deleteSelected, groupSelected, ungroupSelected, duplicateSelected } = useCanvasActions()
@@ -859,6 +863,8 @@ function registerStageEvents(): void {
     } else {
       viewportStore.pan(-deltaX, -deltaY)
     }
+    // 滑鼠沒動，但畫布在它底下移動了：指到的 world 位置已經不同，mousemove 卻不會觸發。
+    presenceStore.updateCursor(pointerWorld())
   })
 
   stage.on('mousedown', (e: Konva.KonvaEventObject<MouseEvent>) => onMouseDown(e))
@@ -1028,6 +1034,9 @@ function startDrawing(tool: ToolType, world: Point): void {
 }
 
 function onMouseMove(): void {
+  // 回報自己的游標位置。節流、以及本機草稿 / 未連線時不送，都在 presence 那一層處理。
+  presenceStore.updateCursor(pointerWorld())
+
   const g = _gesture
 
   if (g.kind === 'panning') {
@@ -1330,12 +1339,20 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="containerRef" class="canvas-container" @contextmenu.prevent="onContainerContextMenu">
+  <div
+    ref="containerRef"
+    class="canvas-container"
+    @contextmenu.prevent="onContainerContextMenu"
+    @mouseleave="presenceStore.updateCursor(null)"
+  >
     <!-- 右鍵選單：Teleport 至 body 避免與 Konva DOM 衝突 -->
     <SelectionContextMenu :context-menu="contextMenu" @close="closeContextMenu" />
 
     <!-- Comment overlay：圖釘與留言框。留言資料由覆疊層直接向 commentStore 取 -->
     <CommentOverlay :viewport="viewportStore.viewport" :canvas-rect="commentOverlayRect" />
+
+    <!-- 其他在線使用者的游標：純顯示，不接收任何滑鼠事件 -->
+    <RemoteCursors :viewport="viewportStore.viewport" :canvas-rect="commentOverlayRect" />
 
     <!-- 文字編輯 overlay：絕對定位於 canvas container，跟隨 viewport 座標更新 -->
     <Teleport to="body">

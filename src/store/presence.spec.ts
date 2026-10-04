@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import type { Session } from '@/services/api'
-import type { PresenceSnapshot, PresenceStatus, PresenceUser } from '@/types/presence'
+import type {
+  PresenceCursorMessage,
+  PresenceSnapshot,
+  PresenceStatus,
+  PresenceUser,
+} from '@/types/presence'
 
 /**
  * 只模擬 store 用得到的 presenceClient 介面。transport 本身的行為（seq、重連、
@@ -11,10 +16,16 @@ const fake = vi.hoisted(() => {
   const snapshotListeners = new Set<(s: PresenceSnapshot) => void>()
   const statusListeners = new Set<(s: PresenceStatus) => void>()
   const sessionListeners = new Set<(s: Session | null) => void>()
+  const cursorListeners = new Set<(c: PresenceCursorMessage) => void>()
   const client = {
     status: { state: 'idle' } as PresenceStatus,
     connect: vi.fn(),
     disconnect: vi.fn(),
+    updateCursor: vi.fn(),
+    onCursor(listener: (c: PresenceCursorMessage) => void) {
+      cursorListeners.add(listener)
+      return () => cursorListeners.delete(listener)
+    },
     onSnapshot(listener: (s: PresenceSnapshot) => void) {
       snapshotListeners.add(listener)
       return () => snapshotListeners.delete(listener)
@@ -24,7 +35,7 @@ const fake = vi.hoisted(() => {
       return () => statusListeners.delete(listener)
     },
   }
-  return { client, snapshotListeners, statusListeners, sessionListeners }
+  return { client, snapshotListeners, statusListeners, sessionListeners, cursorListeners }
 })
 
 vi.mock('@/services/presence', () => ({ presenceClient: fake.client }))
@@ -57,6 +68,26 @@ function emitStatus(status: PresenceStatus): void {
   for (const listener of fake.statusListeners) listener(status)
 }
 
+function emitCursorMove(userId: string, x: number, y: number): void {
+  const cursor: PresenceCursorMessage = {
+    type: 'presence.cursor',
+    project_id: PROJECT_A,
+    user_id: userId,
+    x,
+    y,
+  }
+  for (const listener of fake.cursorListeners) listener(cursor)
+}
+
+function emitCursorLeave(userId: string): void {
+  const cursor: PresenceCursorMessage = {
+    type: 'presence.cursor.leave',
+    project_id: PROJECT_A,
+    user_id: userId,
+  }
+  for (const listener of fake.cursorListeners) listener(cursor)
+}
+
 function emitSession(session: Session | null): void {
   for (const listener of fake.sessionListeners) listener(session)
 }
@@ -68,6 +99,7 @@ describe('presence store', () => {
     fake.snapshotListeners.clear()
     fake.statusListeners.clear()
     fake.sessionListeners.clear()
+    fake.cursorListeners.clear()
     fake.client.status = { state: 'idle' }
     fake.client.connect.mockImplementation((id: string) =>
       emitStatus({ state: 'connecting', projectId: id }),
@@ -243,5 +275,166 @@ describe('presence store', () => {
     expect(fake.snapshotListeners.size).toBe(1)
     expect(fake.statusListeners.size).toBe(1)
     expect(fake.sessionListeners.size).toBe(1)
+  })
+})
+
+describe('presence store：游標', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    fake.snapshotListeners.clear()
+    fake.statusListeners.clear()
+    fake.sessionListeners.clear()
+    fake.cursorListeners.clear()
+    fake.client.status = { state: 'idle' }
+    fake.client.connect.mockImplementation((id: string) =>
+      emitStatus({ state: 'connecting', projectId: id }),
+    )
+    fake.client.disconnect.mockImplementation(() => emitStatus({ state: 'idle' }))
+  })
+
+  /** 連上 PROJECT_A，名單是 Alice 與 Bob。 */
+  function connected() {
+    const store = usePresenceStore()
+    store.connect(PROJECT_A)
+    emitStatus({ state: 'connected', projectId: PROJECT_A })
+    emitSnapshot([ALICE, BOB])
+    return store
+  }
+
+  const entries = (store: ReturnType<typeof usePresenceStore>) => [...store.cursors.entries()]
+
+  it('在線成員的游標以 user_id 為 key 保存，後到的位置覆蓋前一個', () => {
+    const store = connected()
+
+    emitCursorMove('bob', 1, 2)
+    emitCursorMove('bob', 3, 4)
+
+    expect(entries(store)).toEqual([['bob', { x: 3, y: 4 }]])
+  })
+
+  it('游標離開就移除，之後再移動會重新出現', () => {
+    const store = connected()
+    emitCursorMove('bob', 1, 2)
+
+    emitCursorLeave('bob')
+    expect(entries(store)).toEqual([])
+
+    emitCursorMove('bob', 5, 6)
+    expect(entries(store)).toEqual([['bob', { x: 5, y: 6 }]])
+  })
+
+  it('名單外的人的游標直接丟棄，不先存起來', () => {
+    const store = connected()
+
+    emitCursorMove('stranger', 1, 2)
+    expect(entries(store)).toEqual([])
+
+    // 他之後上線時，畫面上不會出現那個舊位置
+    emitSnapshot([ALICE, BOB, { user_id: 'stranger', display_name: null, role: 'member' }])
+    expect(entries(store)).toEqual([])
+  })
+
+  it('成員離線（新的 snapshot 不含他）時，游標一起移除', () => {
+    const store = connected()
+    emitCursorMove('alice', 1, 1)
+    emitCursorMove('bob', 2, 2)
+
+    emitSnapshot([ALICE], PROJECT_A, 2)
+
+    expect(entries(store)).toEqual([['alice', { x: 1, y: 1 }]])
+  })
+
+  it('離線之後才到的游標（順序沒有保證）被丟棄；重新上線也不會帶回舊位置', () => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+    emitSnapshot([ALICE], PROJECT_A, 2)
+
+    emitCursorMove('bob', 9, 9)
+    emitSnapshot([ALICE, BOB], PROJECT_A, 3)
+
+    expect(entries(store)).toEqual([])
+  })
+
+  it('名單沒變的 snapshot 不影響現有游標', () => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+
+    emitSnapshot([ALICE, BOB], PROJECT_A, 2)
+
+    expect(entries(store)).toEqual([['bob', { x: 2, y: 2 }]])
+  })
+
+  it.each<[string, PresenceStatus]>([
+    ['reconnecting', { state: 'reconnecting', projectId: PROJECT_A, attempt: 1, delayMs: 1000 }],
+    ['connecting', { state: 'connecting', projectId: PROJECT_A }],
+    ['stopped', { state: 'stopped', projectId: PROJECT_A, reason: 'protocol_error' }],
+    ['idle', { state: 'idle' }],
+  ])('離開 connected（%s）就清空游標', (_label, status) => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+
+    emitStatus(status)
+
+    expect(entries(store)).toEqual([])
+  })
+
+  it('重連中保留名單但不保留游標；重連後要等對方再次移動', () => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+
+    emitStatus({ state: 'reconnecting', projectId: PROJECT_A, attempt: 1, delayMs: 1000 })
+    expect(store.users).toEqual([ALICE, BOB])
+    expect(entries(store)).toEqual([])
+
+    emitStatus({ state: 'connected', projectId: PROJECT_A })
+    emitSnapshot([ALICE, BOB], PROJECT_A, 1)
+    expect(entries(store)).toEqual([])
+
+    emitCursorMove('bob', 7, 7)
+    expect(entries(store)).toEqual([['bob', { x: 7, y: 7 }]])
+  })
+
+  it('disconnect 清空游標', () => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+
+    store.disconnect()
+
+    expect(entries(store)).toEqual([])
+  })
+
+  it('session 失效（登出）時清空游標', () => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+
+    emitSession(null)
+
+    expect(entries(store)).toEqual([])
+  })
+
+  it('換專案時清空前一個專案的游標', () => {
+    const store = connected()
+    emitCursorMove('bob', 2, 2)
+
+    store.connect(PROJECT_B)
+
+    expect(entries(store)).toEqual([])
+  })
+
+  it('updateCursor 原樣交給 presenceClient（節流在 transport）', () => {
+    const store = connected()
+
+    store.updateCursor({ x: 1, y: 2 })
+    store.updateCursor(null)
+
+    expect(fake.client.updateCursor.mock.calls).toEqual([[{ x: 1, y: 2 }], [null]])
+  })
+
+  it('$dispose 之後不再收游標', () => {
+    const store = connected()
+    store.$dispose()
+
+    expect(fake.cursorListeners.size).toBe(0)
   })
 })

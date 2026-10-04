@@ -2,6 +2,7 @@
  * Presence 協定的型別與 runtime 驗證。
  *
  * 對應後端 server/app/schemas/presence.py 與 server/app/api/presence.py。
+ * server → client 有三種訊息：在線名單（snapshot）、游標位置、游標離開。
  * WebSocket 是信任邊界：server 雖然是自己的，但 JSON 進來時沒有任何型別保證，
  * 版本不一致或 bug 都可能送來不同形狀的資料。驗證不過的訊息一律不進入狀態。
  */
@@ -24,6 +25,31 @@ export interface PresenceSnapshot {
   seq: number
   users: PresenceUser[]
 }
+
+export const PRESENCE_CURSOR_TYPE = 'presence.cursor'
+export const PRESENCE_CURSOR_LEAVE_TYPE = 'presence.cursor.leave'
+
+/** 畫布的 world coordinate。每個人的 pan / zoom 不同，只有 world 座標指的是同一個位置。 */
+export interface CursorPoint {
+  x: number
+  y: number
+}
+
+/** 某個在線使用者的游標位置。單位是 user，不是分頁。 */
+export interface PresenceCursorMove extends CursorPoint {
+  type: typeof PRESENCE_CURSOR_TYPE
+  project_id: string
+  user_id: string
+}
+
+/** 某個使用者的游標離開畫布了。不代表離線——離線只由 snapshot 表達。 */
+export interface PresenceCursorLeave {
+  type: typeof PRESENCE_CURSOR_LEAVE_TYPE
+  project_id: string
+  user_id: string
+}
+
+export type PresenceCursorMessage = PresenceCursorMove | PresenceCursorLeave
 
 /** server 關閉連線時帶的 code。語意與重連策略見 server/app/api/presence.py。 */
 export const PresenceCloseCode = {
@@ -96,4 +122,45 @@ export function parsePresenceSnapshot(value: unknown): PresenceSnapshot | null {
     seq: value.seq as number,
     users: value.users.map(({ user_id, display_name, role }) => ({ user_id, display_name, role })),
   }
+}
+
+/**
+ * 取出訊息的 type，用來決定交給哪個 parser。不是物件或沒有字串 type 時回傳 null。
+ *
+ * 只看 type、不驗證其他欄位：「這是哪一種訊息」與「這則訊息合不合法」是兩個問題，
+ * 不同種類的訊息壞掉時處理方式也不同（見 PresenceClient.handleMessage）。
+ */
+export function presenceMessageType(value: unknown): string | null {
+  return isRecord(value) && typeof value.type === 'string' ? value.type : null
+}
+
+/**
+ * 驗證並正規化一則游標訊息（移動或離開）。不合法時回傳 null。
+ *
+ * 座標必須是有限數字：NaN 或 Infinity 一旦進到座標換算，畫出來的位置就是壞的。
+ */
+export function parsePresenceCursor(value: unknown): PresenceCursorMessage | null {
+  if (
+    !isRecord(value) ||
+    typeof value.project_id !== 'string' ||
+    typeof value.user_id !== 'string' ||
+    value.user_id.length === 0
+  ) {
+    return null
+  }
+  const { project_id, user_id } = value
+
+  if (value.type === PRESENCE_CURSOR_LEAVE_TYPE) {
+    return { type: PRESENCE_CURSOR_LEAVE_TYPE, project_id, user_id }
+  }
+  if (
+    value.type === PRESENCE_CURSOR_TYPE &&
+    typeof value.x === 'number' &&
+    typeof value.y === 'number' &&
+    Number.isFinite(value.x) &&
+    Number.isFinite(value.y)
+  ) {
+    return { type: PRESENCE_CURSOR_TYPE, project_id, user_id, x: value.x, y: value.y }
+  }
+  return null
 }

@@ -1,0 +1,43 @@
+.remote-cursors {
+  position: fixed;
+  // 在畫布之上、留言覆疊層（150）之下：圖釘與留言框是可以操作的東西，不該被游標蓋住
+  z-index: 140;
+  // 整層（含游標本身）都不接收滑鼠事件，底下的畫布操作完全不受影響
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.remote-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  // 沒有 transition：平滑動畫會讓自己 pan / zoom 時游標落後畫布
+  will-change: transform;
+
+  &__arrow {
+    display: block;
+
+    path {
+      fill: var(--cursor-color);
+    }
+  }
+
+  &__label {
+    position: absolute;
+    left: 12px;
+    top: 16px;
+    max-width: 160px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--cursor-color);
+    color: #1e1e1e;
+    // 覆疊層 Teleport 到 body，繼承不到 .app-layout 的字型
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

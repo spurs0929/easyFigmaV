@@ -18,6 +18,7 @@ const fake = vi.hoisted(() => {
     connect: vi.fn(),
     disconnect: vi.fn(),
     onSnapshot: () => () => {},
+    onCursor: () => () => {},
     onStatusChange: () => () => {},
   }
   const documentStore = {

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PRESENCE_RECONNECT_BASE_DELAY_MS, PRESENCE_RECONNECT_MAX_DELAY_MS } from '@/config/app'
+import {
+  PRESENCE_CURSOR_THROTTLE_MS,
+  PRESENCE_RECONNECT_BASE_DELAY_MS,
+  PRESENCE_RECONNECT_MAX_DELAY_MS,
+} from '@/config/app'
 import type { Session } from '@/services/api'
 import {
   PresenceClient,
@@ -7,11 +11,12 @@ import {
   toWebSocketUrl,
   type PresenceSocket,
 } from '@/services/presence'
-import type { PresenceSnapshot, PresenceStatus } from '@/types/presence'
+import type { PresenceCursorMessage, PresenceSnapshot, PresenceStatus } from '@/types/presence'
 
 const PROJECT_A = '11111111-1111-1111-1111-111111111111'
 const PROJECT_B = '22222222-2222-2222-2222-222222222222'
 const USER = '33333333-3333-3333-3333-333333333333'
+const OTHER = '44444444-4444-4444-4444-444444444444'
 const TOKEN = 'token-one'
 const NEW_TOKEN = 'token-two'
 
@@ -58,6 +63,14 @@ function snapshot(seq: number, projectId = PROJECT_A): PresenceSnapshot {
   }
 }
 
+function cursorMove(x: number, y: number, projectId = PROJECT_A) {
+  return { type: 'presence.cursor', project_id: projectId, user_id: OTHER, x, y }
+}
+
+function cursorLeave(projectId = PROJECT_A) {
+  return { type: 'presence.cursor.leave', project_id: projectId, user_id: OTHER }
+}
+
 function fakeSession(token: string): Session {
   return {
     access_token: token,
@@ -83,7 +96,9 @@ function setup(options: { token?: string | null } = {}) {
 
   const snapshots: PresenceSnapshot[] = []
   const statuses: PresenceStatus[] = []
+  const cursors: PresenceCursorMessage[] = []
   client.onSnapshot((s) => snapshots.push(s))
+  client.onCursor((c) => cursors.push(c))
   client.onStatusChange((s) => statuses.push(s))
 
   return {
@@ -91,6 +106,7 @@ function setup(options: { token?: string | null } = {}) {
     sockets,
     snapshots,
     statuses,
+    cursors,
     refreshSession,
     setToken: (value: string | null) => {
       token = value
@@ -314,7 +330,8 @@ describe('snapshot', () => {
   it.each([
     ['非 JSON', 'not json'],
     ['陣列', '[]'],
-    ['錯誤的 type', { ...snapshot(1), type: 'presence.update' }],
+    ['物件但沒有 type', { project_id: PROJECT_A, seq: 1, users: [] }],
+    ['type 不是字串', { ...snapshot(1), type: 1 }],
     ['缺 project_id', { ...snapshot(1), project_id: undefined }],
     ['seq 不是整數', { ...snapshot(1), seq: 1.5 }],
     ['seq 是字串', { ...snapshot(1), seq: '1' }],
@@ -713,5 +730,353 @@ describe('stale socket', () => {
     expect(live[0]!.url).toContain(PROJECT_B)
     expect(t.sockets.at(-1)).toBe(live[0])
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+// ─────────────────────────── 訊息分派 ───────────────────────────
+
+describe('message routing', () => {
+  it.each([
+    ['server 之後才新增的訊息', { type: 'presence.typing', project_id: PROJECT_A }],
+    ['client → server 的 type', { type: 'cursor.move', x: 1, y: 2 }],
+    ['只有 type', { type: 'whatever' }],
+  ])('不認得的 type（%s）被忽略，連線與名單不受影響', (_label, payload) => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    const socket = t.last()
+    t.authenticate(socket)
+
+    socket.receive(payload)
+    socket.receive(snapshot(2))
+
+    expect(t.client.status).toEqual({ state: 'connected', projectId: PROJECT_A })
+    expect(t.snapshots.map((s) => s.seq)).toEqual([1, 2])
+    expect(t.cursors).toEqual([])
+    expect(socket.closedWith).toBeNull()
+  })
+
+  it('認證前收到不認得的 type：不算連線成功，也不是錯誤', () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    t.last().open()
+
+    t.last().receive({ type: 'presence.typing' })
+
+    expect(t.client.status).toEqual({ state: 'connecting', projectId: PROJECT_A })
+  })
+})
+
+// ─────────────────────────── 游標：接收 ───────────────────────────
+
+describe('cursor：接收', () => {
+  it('移動與離開依序轉發，只帶已知欄位', () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    t.authenticate(t.last())
+
+    t.last().receive({ ...cursorMove(12.5, -340), extra: 'x' })
+    t.last().receive(cursorLeave())
+
+    expect(t.cursors).toEqual([
+      { type: 'presence.cursor', project_id: PROJECT_A, user_id: OTHER, x: 12.5, y: -340 },
+      { type: 'presence.cursor.leave', project_id: PROJECT_A, user_id: OTHER },
+    ])
+  })
+
+  it.each([
+    ['缺 x', { ...cursorMove(1, 2), x: undefined }],
+    ['缺 y', { ...cursorMove(1, 2), y: undefined }],
+    ['座標是字串', { ...cursorMove(1, 2), x: '1' }],
+    ['座標是 null', { ...cursorMove(1, 2), y: null }],
+    ['缺 user_id', { ...cursorMove(1, 2), user_id: undefined }],
+    ['user_id 是空字串', { ...cursorMove(1, 2), user_id: '' }],
+    ['缺 project_id', { ...cursorMove(1, 2), project_id: undefined }],
+    ['別的專案的游標', cursorMove(1, 2, PROJECT_B)],
+    ['leave 缺 user_id', { ...cursorLeave(), user_id: undefined }],
+    ['別的專案的 leave', cursorLeave(PROJECT_B)],
+  ])('壞掉的游標訊息（%s）只丟掉那一則，presence 繼續', (_label, payload) => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    const socket = t.last()
+    t.authenticate(socket)
+
+    socket.receive(payload)
+    socket.receive(cursorMove(3, 4))
+    socket.receive(snapshot(2))
+
+    expect(t.cursors).toEqual([cursorMove(3, 4)])
+    expect(t.snapshots.map((s) => s.seq)).toEqual([1, 2])
+    expect(t.client.status).toEqual({ state: 'connected', projectId: PROJECT_A })
+    expect(socket.closedWith).toBeNull()
+  })
+
+  it.each([
+    [
+      'NaN',
+      '{"type":"presence.cursor","project_id":"' + PROJECT_A + '","user_id":"u","x":NaN,"y":1}',
+    ],
+    [
+      '溢位成 Infinity',
+      '{"type":"presence.cursor","project_id":"' + PROJECT_A + '","user_id":"u","x":1e999,"y":1}',
+    ],
+  ])('非有限的座標（%s）不會進到 listener', (_label, raw) => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    t.authenticate(t.last())
+
+    t.last().receive(raw)
+
+    expect(t.cursors).toEqual([])
+  })
+
+  it('第一份 snapshot 之前的游標被丟棄，也不會讓連線變成已連線', () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    t.last().open()
+
+    t.last().receive(cursorMove(1, 2))
+
+    expect(t.cursors).toEqual([])
+    expect(t.client.status).toEqual({ state: 'connecting', projectId: PROJECT_A })
+  })
+
+  it('游標不影響 seq：之後較新的 snapshot 照常接受', () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    t.authenticate(t.last(), 5)
+
+    t.last().receive(cursorMove(1, 2))
+    t.last().receive(snapshot(4))
+    t.last().receive(snapshot(6))
+
+    expect(t.snapshots.map((s) => s.seq)).toEqual([5, 6])
+  })
+
+  it('舊 socket 晚到的游標不會進到新專案', () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    const socketA = t.last()
+    t.authenticate(socketA)
+    t.client.connect(PROJECT_B)
+    t.authenticate(t.last(), 1, PROJECT_B)
+
+    socketA.receive(cursorMove(1, 2))
+
+    expect(t.cursors).toEqual([])
+  })
+
+  it('斷線重連期間收不到游標；重連後照常', async () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    const first = t.last()
+    t.authenticate(first)
+    first.serverClose(1006)
+
+    first.receive(cursorMove(1, 2))
+    expect(t.cursors).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(PRESENCE_RECONNECT_BASE_DELAY_MS)
+    t.authenticate(t.last())
+    t.last().receive(cursorMove(3, 4))
+
+    expect(t.cursors).toEqual([cursorMove(3, 4)])
+  })
+})
+
+// ─────────────────────────── 游標：送出 ───────────────────────────
+
+describe('cursor：送出與節流', () => {
+  /** auth 是第一則，之後的才是游標。 */
+  const sentCursors = (socket: FakeSocket) => socket.sent.slice(1).map((raw) => JSON.parse(raw))
+
+  function connected() {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    const socket = t.last()
+    t.authenticate(socket)
+    return { ...t, socket }
+  }
+
+  it('第一次立刻送出（leading）', () => {
+    const t = connected()
+
+    t.client.updateCursor({ x: 1.5, y: -2 })
+
+    expect(sentCursors(t.socket)).toEqual([{ type: 'cursor.move', x: 1.5, y: -2 }])
+  })
+
+  it('視窗內的更新不送，結束時只補送最新的一個（trailing）', () => {
+    const t = connected()
+
+    t.client.updateCursor({ x: 1, y: 1 })
+    t.client.updateCursor({ x: 2, y: 2 })
+    t.client.updateCursor({ x: 3, y: 3 })
+    expect(sentCursors(t.socket)).toHaveLength(1)
+
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS - 1)
+    expect(sentCursors(t.socket)).toHaveLength(1)
+
+    vi.advanceTimersByTime(1)
+    expect(sentCursors(t.socket)).toEqual([
+      { type: 'cursor.move', x: 1, y: 1 },
+      { type: 'cursor.move', x: 3, y: 3 },
+    ])
+  })
+
+  it('持續移動時每個視窗最多一則', () => {
+    const t = connected()
+
+    // 每 5ms 一次 mousemove，持續 1 秒
+    for (let i = 0; i < 200; i += 1) {
+      t.client.updateCursor({ x: i, y: 0 })
+      vi.advanceTimersByTime(5)
+    }
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    const sent = sentCursors(t.socket)
+    expect(sent.length).toBeLessThanOrEqual(1000 / PRESENCE_CURSOR_THROTTLE_MS + 1)
+    // 最後的位置沒有被丟掉
+    expect(sent[sent.length - 1]).toEqual({ type: 'cursor.move', x: 199, y: 0 })
+  })
+
+  it('停下來之後不會再送任何東西', () => {
+    const t = connected()
+    t.client.updateCursor({ x: 1, y: 1 })
+
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS * 10)
+
+    expect(sentCursors(t.socket)).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('離開畫布送 cursor.leave；與移動共用同一格，最後的狀態勝出', () => {
+    const t = connected()
+
+    t.client.updateCursor({ x: 1, y: 1 })
+    t.client.updateCursor({ x: 2, y: 2 })
+    t.client.updateCursor(null)
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    expect(sentCursors(t.socket)).toEqual([
+      { type: 'cursor.move', x: 1, y: 1 },
+      { type: 'cursor.leave' },
+    ])
+  })
+
+  it('離開之後又回來：補送的是回來後的位置', () => {
+    const t = connected()
+
+    t.client.updateCursor(null)
+    t.client.updateCursor({ x: 5, y: 5 })
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    expect(sentCursors(t.socket)).toEqual([
+      { type: 'cursor.leave' },
+      { type: 'cursor.move', x: 5, y: 5 },
+    ])
+  })
+
+  it.each([
+    ['NaN', { x: Number.NaN, y: 1 }],
+    ['Infinity', { x: 1, y: Number.POSITIVE_INFINITY }],
+  ])('非有限的座標（%s）不送出：server 會以 4400 關閉整條連線', (_label, point) => {
+    const t = connected()
+
+    t.client.updateCursor(point)
+
+    expect(sentCursors(t.socket)).toEqual([])
+  })
+
+  it('尚未連線（idle）時不送、不啟動計時器', () => {
+    const t = setup()
+
+    t.client.updateCursor({ x: 1, y: 1 })
+
+    expect(t.sockets).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('socket open 但還沒收到第一份 snapshot 時不送', () => {
+    const t = setup()
+    t.client.connect(PROJECT_A)
+    t.last().open()
+
+    t.client.updateCursor({ x: 1, y: 1 })
+
+    expect(t.last().sent).toHaveLength(1) // 只有 auth
+  })
+
+  it('重連等待中不送，也不排隊到重連之後', async () => {
+    const t = connected()
+    t.socket.serverClose(1006)
+
+    t.client.updateCursor({ x: 1, y: 1 })
+    await vi.advanceTimersByTimeAsync(PRESENCE_RECONNECT_BASE_DELAY_MS)
+    t.authenticate(t.last())
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    expect(sentCursors(t.socket)).toEqual([])
+    expect(sentCursors(t.last())).toEqual([])
+  })
+
+  it('斷線時丟掉還沒送出的位置，不會在新連線上補送舊座標', async () => {
+    const t = connected()
+    t.client.updateCursor({ x: 1, y: 1 })
+    t.client.updateCursor({ x: 2, y: 2 }) // 等待 trailing
+
+    t.socket.serverClose(1006)
+    await vi.advanceTimersByTimeAsync(PRESENCE_RECONNECT_BASE_DELAY_MS)
+    t.authenticate(t.last())
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    expect(sentCursors(t.socket)).toHaveLength(1)
+    expect(sentCursors(t.last())).toEqual([])
+  })
+
+  it('disconnect 取消等待中的 trailing', () => {
+    const t = connected()
+    t.client.updateCursor({ x: 1, y: 1 })
+    t.client.updateCursor({ x: 2, y: 2 })
+
+    t.client.disconnect()
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    expect(sentCursors(t.socket)).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('換專案後，舊專案等待中的位置不會送到新專案', () => {
+    const t = connected()
+    t.client.updateCursor({ x: 1, y: 1 })
+    t.client.updateCursor({ x: 2, y: 2 })
+
+    t.client.connect(PROJECT_B)
+    const socketB = t.last()
+    t.authenticate(socketB, 1, PROJECT_B)
+    vi.advanceTimersByTime(PRESENCE_CURSOR_THROTTLE_MS)
+
+    expect(sentCursors(t.socket)).toHaveLength(1)
+    expect(sentCursors(socketB)).toEqual([])
+  })
+
+  it('換專案後節流重新開始：新專案的第一次移動立刻送出', () => {
+    const t = connected()
+    t.client.updateCursor({ x: 1, y: 1 })
+
+    t.client.connect(PROJECT_B)
+    const socketB = t.last()
+    t.authenticate(socketB, 1, PROJECT_B)
+    t.client.updateCursor({ x: 9, y: 9 })
+
+    expect(sentCursors(socketB)).toEqual([{ type: 'cursor.move', x: 9, y: 9 }])
+  })
+
+  it('協定錯誤停止之後不送', () => {
+    const t = connected()
+    t.socket.receive('garbage')
+
+    t.client.updateCursor({ x: 1, y: 1 })
+
+    expect(sentCursors(t.socket)).toEqual([])
   })
 })
