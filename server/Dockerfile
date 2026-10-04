@@ -18,7 +18,7 @@ USER appuser
 # --proxy-headers / --forwarded-allow-ips：Render 在反向代理後面，少了這兩個
 #   request.url.scheme 會是 http、request.client.host 會是代理 IP，
 #   之後設 Secure cookie 和依 IP 做登入速率限制都會壞掉
-# --ws-max-size：單一 WebSocket 訊息的上限（預設 16MB）。presence 唯一的上行訊息是
-#   auth（一個 JWT，幾百 bytes），16KB 綽綽有餘，超過由 uvicorn 直接以 1009 斷線，
-#   不會先整包讀進記憶體
+# --ws-max-size：單一 WebSocket 訊息的上限（預設 16MB）。presence 的上行訊息只有
+#   auth（一個 JWT，幾百 bytes）與 cursor（不到一百 bytes），16KB 綽綽有餘，
+#   超過由 uvicorn 直接以 1009 斷線，不會先整包讀進記憶體
 CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*' --ws-max-size 16384"]

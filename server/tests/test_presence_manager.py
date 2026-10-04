@@ -328,3 +328,99 @@ async def test_roster_change_during_broadcast(manager, project_id):
 
     assert len(alice_conn.sent) == 1
     assert online_ids(manager, project_id) == [alice.user_id]
+
+
+# ── relay ──────────────────────────────────────────────────────────────
+
+CURSOR = {"type": "presence.cursor", "x": 1.0, "y": 2.0}
+
+
+async def test_relay_reaches_other_users_but_not_the_sender(manager, project_id):
+    alice, bob, carol = make_user(), make_user(), make_user()
+    alice_conn, bob_conn, carol_conn = FakeConnection(), FakeConnection(), FakeConnection()
+    manager.register(project_id, alice, alice_conn)
+    manager.register(project_id, bob, bob_conn)
+    manager.register(project_id, carol, carol_conn)
+
+    await manager.relay(project_id, alice.user_id, CURSOR)
+
+    assert alice_conn.sent == []
+    assert bob_conn.sent == [CURSOR]
+    assert carol_conn.sent == [CURSOR]
+
+
+async def test_relay_skips_every_tab_of_the_sender(manager, project_id):
+    """排除的單位是 user：sender 的另一個分頁也不會收到自己的游標。"""
+    alice, bob = make_user(), make_user()
+    alice_tab1, alice_tab2 = FakeConnection(), FakeConnection()
+    bob_tab1, bob_tab2 = FakeConnection(), FakeConnection()
+    manager.register(project_id, alice, alice_tab1)
+    manager.register(project_id, alice, alice_tab2)
+    manager.register(project_id, bob, bob_tab1)
+    manager.register(project_id, bob, bob_tab2)
+
+    await manager.relay(project_id, alice.user_id, CURSOR)
+
+    assert alice_tab1.sent == [] and alice_tab2.sent == []
+    assert bob_tab1.sent == [CURSOR] and bob_tab2.sent == [CURSOR]
+
+
+async def test_relay_does_not_leak_to_other_projects(manager):
+    project_a, project_b = uuid.uuid4(), uuid.uuid4()
+    alice, bob, outsider = make_user(), make_user(), make_user()
+    bob_conn, outsider_conn = FakeConnection(), FakeConnection()
+    manager.register(project_a, alice, FakeConnection())
+    manager.register(project_a, bob, bob_conn)
+    manager.register(project_b, outsider, outsider_conn)
+
+    await manager.relay(project_a, alice.user_id, CURSOR)
+
+    assert bob_conn.sent == [CURSOR]
+    assert outsider_conn.sent == []
+
+
+async def test_relay_keeps_no_state(manager, project_id):
+    """轉發不是名單變動：seq、名單與 room 的內容都和轉發之前一模一樣。"""
+    alice, bob = make_user(), make_user()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, FakeConnection())
+    before = manager.snapshot(project_id)
+
+    await manager.relay(project_id, alice.user_id, CURSOR)
+
+    assert manager.snapshot(project_id) == before
+    # 晚加入的人只拿得到名單，沒有任何人的游標可以補給他。
+    late = FakeConnection()
+    manager.register(project_id, make_user(), late)
+    await manager.broadcast(project_id)
+    assert [message["type"] for message in late.sent] == ["presence.snapshot"]
+
+
+async def test_relay_from_user_who_is_not_online_is_dropped(manager, project_id):
+    """連線正在關閉、已經 unregister 的 sender：其他人不該再收到名單外的人的游標。"""
+    bob_conn = FakeConnection()
+    manager.register(project_id, make_user(), bob_conn)
+
+    await manager.relay(project_id, uuid.uuid4(), CURSOR)
+
+    assert bob_conn.sent == []
+
+
+async def test_relay_to_empty_project_is_noop(manager, project_id):
+    await manager.relay(project_id, uuid.uuid4(), CURSOR)
+    assert manager._rooms == {}
+
+
+async def test_broken_connection_does_not_break_relay(manager, project_id):
+    alice, bob, carol = make_user(), make_user(), make_user()
+    broken, healthy = FakeConnection(fail=True), FakeConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, broken)
+    manager.register(project_id, carol, healthy)
+
+    await manager.relay(project_id, alice.user_id, CURSOR)
+
+    assert healthy.sent == [CURSOR]
+    # 與 broadcast 相同：只關閉、不 unregister，cleanup 交給那條連線的擁有者。
+    assert broken.closed_with == CLOSE_SEND_FAILED
+    assert bob.user_id in online_ids(manager, project_id)

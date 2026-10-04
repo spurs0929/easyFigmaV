@@ -1,8 +1,15 @@
-"""Presence WebSocket：誰正在看這個專案。
+"""Presence WebSocket：誰正在看這個專案、他們的游標在哪裡。
 
-協定（v1 只有這兩種訊息）：
-    client → server  第一則且唯一一則：{"type": "auth", "access_token": "<jwt>"}
-    server → client  {"type": "presence.snapshot", ...}（見 app/schemas/presence.py）
+協定：
+    client → server
+        第一則：{"type": "auth", "access_token": "<jwt>"}
+        之後：  {"type": "cursor.move", "x": <float>, "y": <float>}
+                {"type": "cursor.leave"}
+    server → client
+        {"type": "presence.snapshot", ...}       在線名單
+        {"type": "presence.cursor", ...}         某人的游標位置
+        {"type": "presence.cursor.leave", ...}   某人的游標離開畫布
+    schema 見 app/schemas/presence.py。座標是畫布的 world coordinate。
 
 token 走第一則訊息而不是 URL：瀏覽器的 WebSocket API 無法設定 Authorization
 header，而放 query string 會進到 uvicorn 的存取日誌與代理紀錄。代價是必須先
@@ -11,15 +18,26 @@ accept 才拿得到 token，所以用 AUTH_TIMEOUT_SECONDS 限制未驗證連線
 client 只會看到 1006，無從決定該重新登入還是停止重連。
 
 close code（client 依此決定重連策略）：
-    4400  訊息不符協定（壞 JSON、錯誤格式、auth 之後又送訊息、binary frame）→ bug，不重連
+    4400  訊息不符協定（壞 JSON、錯誤格式、未知的 type、非有限的座標、
+          binary frame）→ bug，不重連
     4401  認證失敗（沒有 token、無效、過期、使用者不存在）→ refresh token 後重連
     4404  專案不存在或不是成員，兩者刻意不區分，同 REST 的 404 → 不重連
     4408  accept 之後沒有在時限內送出 auth → 可重連
     1011  server 端錯誤 / 傳送失敗（uvicorn 與 PresenceManager 產生）→ 可重連
     Origin 不在允許清單：在 accept 之前拒絕，瀏覽器看到的是握手失敗
 
-已知限制（v1 接受）：已建立的連線不會重新驗證。token 過期、被移出專案或專案被
-刪除之後，連線在斷線前仍然有效。
+游標是 user 層級的，與在線名單同一個單位：
+    - 同一人開多個分頁共用一個游標，最後送來的 cursor.move 勝出。
+    - 連線關閉「不會」送出 presence.cursor.leave。同一人還有其他分頁時他仍然在線，
+      游標不該消失；最後一條連線關閉時，他會從 presence.snapshot 的名單消失，
+      client 以名單為準移除游標。離線只有 snapshot 這一個訊號。
+    - presence.cursor.leave 只在 client 主動送出 cursor.leave 時產生。
+
+已知限制（v1 接受）：
+    - 已建立的連線不會重新驗證。token 過期、被移出專案或專案被刪除之後，連線在
+      斷線前仍然有效——仍在名單上，也仍收得到名單與其他人的游標。
+    - cursor 訊息沒有 server 端的頻率限制，正常 client 自己節流（約 20 則 / 秒），
+      不守規矩的 client 可以送得更快。
 """
 
 import asyncio
@@ -36,7 +54,14 @@ from app.core.logging import get_logger
 from app.core.presence import presence
 from app.db.session import AsyncSessionLocal
 from app.models import Project
-from app.schemas.presence import PresenceAuthMessage, PresenceUser
+from app.schemas.presence import (
+    CursorMoveMessage,
+    PresenceAuthMessage,
+    PresenceCursor,
+    PresenceCursorLeave,
+    PresenceUser,
+    presence_client_message,
+)
 
 router = APIRouter(tags=["Presence"])
 logger = get_logger(__name__)
@@ -47,6 +72,9 @@ AUTH_TIMEOUT_SECONDS = 5.0
 # auth 訊息的上限。一個 JWT 只有幾百字元，這個數字只是擋掉把大塊資料塞進
 # 第一則訊息的情況；傳輸層的上限另由 uvicorn --ws-max-size 負責（見 Dockerfile）。
 MAX_AUTH_MESSAGE_CHARS = 4096
+
+# cursor 訊息的上限。最長的合法訊息（兩個完整精度的 float）不到一百個字元。
+MAX_CURSOR_MESSAGE_CHARS = 256
 
 CLOSE_INVALID_MESSAGE = 4400
 CLOSE_UNAUTHENTICATED = 4401
@@ -89,7 +117,7 @@ async def presence_socket(websocket: WebSocket, project_id: uuid.UUID) -> None:
             # 同一人多開一個分頁：名單沒變，其他人不需要通知，
             # 但這條新連線還沒有任何狀態，要單獨送一份目前的 snapshot。
             await websocket.send_json(presence.snapshot(project_id).model_dump(mode="json"))
-        await _wait_for_disconnect(websocket)
+        await _relay_cursor_messages(websocket, project_id, user)
     except WebSocketDisconnect:
         pass
     finally:
@@ -165,18 +193,54 @@ async def _authenticate(project_id: uuid.UUID, token: str) -> PresenceUser:
         )
 
 
-async def _wait_for_disconnect(websocket: WebSocket) -> None:
-    """v1 認證之後 client 不該再送任何訊息，這條連線只是用來「在場」。
+async def _relay_cursor_messages(
+    websocket: WebSocket, project_id: uuid.UUID, user: PresenceUser
+) -> None:
+    """認證之後的接收迴圈：把 cursor 訊息轉發給其他人，直到連線結束。
 
-    收到任何訊息都視為違反協定並關閉，而不是忽略：默默接受等於替未定義的
-    訊息開了一扇門。死連線的偵測不靠應用層 heartbeat——uvicorn 會送 protocol
-    層的 ping，對方沒回應就斷線，這裡的 receive() 會因此收到 disconnect。
+    不符協定的訊息一律關閉連線，而不是忽略：默默接受等於替未定義的訊息開了
+    一扇門。死連線的偵測不靠應用層 heartbeat——uvicorn 會送 protocol 層的 ping，
+    對方沒回應就斷線，這裡的 receive() 會因此收到 disconnect。
+
+    轉發是 await 完才讀下一則：同一個 sender 的訊息因此依序送達，後面的位置
+    不會被前面的蓋掉。代價是某個收件端很慢時，sender 的下一則要等到它送完或
+    逾時（PresenceManager 的 SEND_TIMEOUT_SECONDS）才會處理。
+
+    這裡不碰資料庫：每秒數十則的訊息不能各查一次成員資格（見模組說明的已知限制）。
     """
     while True:
         message = await websocket.receive()
         if message["type"] == "websocket.disconnect":
             return
-        # PresenceManager 可能已經因為傳送失敗而先關掉這條連線。
-        if websocket.application_state == WebSocketState.CONNECTED:
-            await websocket.close(code=CLOSE_INVALID_MESSAGE)
-        return
+
+        payload = _cursor_payload(message.get("text"), project_id, user)
+        if payload is None:
+            # PresenceManager 可能已經因為傳送失敗而先關掉這條連線。
+            if websocket.application_state == WebSocketState.CONNECTED:
+                await websocket.close(code=CLOSE_INVALID_MESSAGE)
+            return
+        await presence.relay(project_id, user.user_id, payload)
+
+
+def _cursor_payload(
+    text: str | None, project_id: uuid.UUID, user: PresenceUser
+) -> dict[str, object] | None:
+    """把 client 的 cursor 訊息轉成要轉發的內容。不符協定時回傳 None。
+
+    user_id 取自這條連線認證時的身分，client 無法替別人送游標。
+    """
+    # text 是 None 代表 binary frame。
+    if text is None or len(text) > MAX_CURSOR_MESSAGE_CHARS:
+        return None
+    try:
+        message = presence_client_message.validate_json(text)
+    except ValidationError:
+        return None
+
+    if isinstance(message, CursorMoveMessage):
+        outgoing: PresenceCursor | PresenceCursorLeave = PresenceCursor(
+            project_id=project_id, user_id=user.user_id, x=message.x, y=message.y
+        )
+    else:
+        outgoing = PresenceCursorLeave(project_id=project_id, user_id=user.user_id)
+    return outgoing.model_dump(mode="json")

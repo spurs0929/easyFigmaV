@@ -493,3 +493,443 @@ async def test_broken_connection_does_not_affect_others(
         presence_state.unregister(project.id, ghost.user_id, broken)
 
     await eventually(lambda: presence_state._rooms == {})
+
+
+# ── cursor：轉發 ───────────────────────────────────────────────────────
+#
+# 「沒有收到某則訊息」一律用「下一則收到的是另一則」來斷言，而不是等一段時間
+# 看有沒有東西進來：前者不依賴時間，也不會讓測試變慢。
+
+
+def cursor_move(x: float, y: float) -> dict:
+    return {"type": "cursor.move", "x": x, "y": y}
+
+
+CURSOR_LEAVE = {"type": "cursor.leave"}
+
+
+async def test_cursor_move_is_relayed_to_other_users(
+    make_client, make_user, make_project, make_member
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await receive(owner_ws)  # member 上線的 snapshot
+
+        await owner_ws.send_json(cursor_move(12.5, -340))
+
+        assert await receive(member_ws) == {
+            "type": "presence.cursor",
+            "project_id": str(project.id),
+            "user_id": str(owner.id),
+            "x": 12.5,
+            "y": -340.0,
+        }
+
+
+async def test_cursor_move_is_not_echoed_to_sender(
+    make_client, make_user, make_project, make_member
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await receive(owner_ws)
+
+        await owner_ws.send_json(cursor_move(1, 1))
+        await receive(member_ws)
+        await member_ws.send_json(cursor_move(2, 2))
+
+        # owner 收到的下一則是 member 的游標，中間沒有自己那一則。
+        echoed = await receive(owner_ws)
+        assert (echoed["user_id"], echoed["x"]) == (str(member.id), 2.0)
+
+
+async def test_cursor_user_id_comes_from_the_connection_not_the_message(
+    make_client, make_user, make_project, make_member
+):
+    """訊息裡帶 user_id 是多餘欄位（4400），不可能藉此替別人送游標。"""
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await receive(owner_ws)
+
+        await member_ws.send_json({**cursor_move(1, 1), "user_id": str(owner.id)})
+
+        assert await close_code(member_ws) == presence_api.CLOSE_INVALID_MESSAGE
+        # owner 只看到 member 離線，沒有任何游標訊息。
+        assert (await receive(owner_ws))["type"] == "presence.snapshot"
+
+
+async def test_cursor_is_not_relayed_to_other_projects(
+    make_client, make_user, make_project, make_member
+):
+    alice, dave = await make_user(), await make_user()
+    bob, carol = await make_user(), await make_user()
+    project_a, project_b = await make_project(alice), await make_project(bob)
+    await make_member(project_a, dave)
+    await make_member(project_b, carol)
+
+    async with (
+        make_client() as client,
+        joined(client, project_a.id, alice) as (alice_ws, _),
+        joined(client, project_a.id, dave) as (dave_ws, _),
+        joined(client, project_b.id, bob) as (bob_ws, _),
+        joined(client, project_b.id, carol) as (carol_ws, _),
+    ):
+        await receive(bob_ws)  # carol 上線的 snapshot
+
+        await alice_ws.send_json(cursor_move(1, 1))
+        # dave 收到，代表 project A 的轉發已經處理完。
+        assert (await receive(dave_ws))["user_id"] == str(alice.id)
+
+        await carol_ws.send_json(cursor_move(2, 2))
+        from_b = await receive(bob_ws)
+        assert (from_b["project_id"], from_b["user_id"]) == (str(project_b.id), str(carol.id))
+
+
+async def test_cursor_leave_is_relayed_and_cursor_can_come_back(
+    make_client, make_user, make_project, make_member
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await receive(owner_ws)
+
+        await owner_ws.send_json(cursor_move(1, 1))
+        await owner_ws.send_json(CURSOR_LEAVE)
+        await owner_ws.send_json(cursor_move(3, 4))
+
+        # 同一個 sender 的訊息依送出的順序抵達。
+        assert (await receive(member_ws))["type"] == "presence.cursor"
+        assert await receive(member_ws) == {
+            "type": "presence.cursor.leave",
+            "project_id": str(project.id),
+            "user_id": str(owner.id),
+        }
+        back = await receive(member_ws)
+        assert (back["type"], back["x"], back["y"]) == ("presence.cursor", 3.0, 4.0)
+
+
+async def test_cursor_does_not_change_roster_or_seq(
+    make_client, make_user, make_project, make_member, presence_state
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, roster),
+    ):
+        await owner_ws.send_json(cursor_move(1, 1))
+        await owner_ws.send_json(CURSOR_LEAVE)
+        await receive(member_ws)
+        await receive(member_ws)
+
+        assert presence_state.snapshot(project.id).model_dump(mode="json") == roster
+
+
+async def test_cursor_position_is_not_stored_for_late_joiners(
+    make_client, make_user, make_project, make_member
+):
+    """server 不保存游標：晚加入的人只拿到名單，要等對方再次移動才看得到游標。"""
+    owner, member, late = await make_user(), await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+    await make_member(project, late)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await owner_ws.send_json(cursor_move(1, 1))
+        await receive(member_ws)
+
+        async with joined(client, project.id, late) as (late_ws, first):
+            assert first["type"] == "presence.snapshot"
+
+            await owner_ws.send_json(cursor_move(5, 6))
+            # 下一則就是新的位置，中間沒有補送 (1, 1)。
+            moved = await receive(late_ws)
+            assert (moved["type"], moved["x"], moved["y"]) == ("presence.cursor", 5.0, 6.0)
+
+
+async def test_integer_coordinates_are_accepted(make_client, make_user, make_project, make_member):
+    """JSON 不區分整數與浮點數，瀏覽器的 JSON.stringify(10.0) 就是 "10"。"""
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await owner_ws.send_text('{"type": "cursor.move", "x": 10, "y": -0}')
+        moved = await receive(member_ws)
+        assert (moved["x"], moved["y"]) == (10.0, 0.0)
+
+
+# ── cursor：協定驗證 ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        "[1, 2]",
+        '{"x": 1, "y": 2}',
+        '{"type": "cursor", "x": 1, "y": 2}',
+        '{"type": "presence.cursor", "x": 1, "y": 2}',
+        '{"type": "auth", "access_token": "x"}',
+        '{"type": "cursor.move", "x": 1}',
+        '{"type": "cursor.move", "y": 1}',
+        '{"type": "cursor.move"}',
+        '{"type": "cursor.move", "x": 1, "y": 2, "z": 3}',
+        '{"type": "cursor.leave", "x": 1, "y": 2}',
+        '{"type": "cursor.move", "x": "1", "y": 2}',
+        '{"type": "cursor.move", "x": true, "y": 2}',
+        '{"type": "cursor.move", "x": null, "y": 2}',
+        '{"type": "cursor.move", "x": NaN, "y": 2}',
+        '{"type": "cursor.move", "x": 1, "y": Infinity}',
+        '{"type": "cursor.move", "x": -Infinity, "y": 2}',
+        '{"type": "cursor.move", "x": 1e999, "y": 2}',
+        '{"type": "cursor.move", "x": 1, "y": 2' + " " * 300 + "}",
+    ],
+    ids=[
+        "not-json",
+        "array",
+        "no-type",
+        "unknown-type",
+        "server-message-type",
+        "auth-again",
+        "missing-y",
+        "missing-x",
+        "missing-both",
+        "extra-field",
+        "leave-with-extra-field",
+        "string-coordinate",
+        "bool-coordinate",
+        "null-coordinate",
+        "nan",
+        "infinity",
+        "negative-infinity",
+        "overflow-to-infinity",
+        "oversized",
+    ],
+)
+async def test_invalid_cursor_message_is_protocol_violation(
+    make_client, make_user, make_project, make_member, raw
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await receive(owner_ws)
+
+        await member_ws.send_text(raw)
+
+        assert await close_code(member_ws) == presence_api.CLOSE_INVALID_MESSAGE
+        # 壞訊息沒有被轉發：owner 收到的下一則是 member 離線的名單，不是游標。
+        after = await receive(owner_ws)
+        assert after["type"] == "presence.snapshot"
+        assert user_ids(after) == [str(owner.id)]
+
+
+async def test_binary_cursor_message_is_protocol_violation(
+    make_client, make_user, make_project, presence_state
+):
+    owner = await make_user()
+    project = await make_project(owner)
+
+    async with make_client() as client, joined(client, project.id, owner) as (ws, _):
+        await ws.send_bytes(b'{"type": "cursor.move", "x": 1, "y": 2}')
+        assert await close_code(ws) == presence_api.CLOSE_INVALID_MESSAGE
+
+    await eventually(lambda: presence_state._rooms == {})
+
+
+async def test_valid_cursor_messages_keep_the_connection_open(
+    make_client, make_user, make_project, presence_state
+):
+    """沒有其他人在線時，合法的 cursor 訊息沒有收件者，但也不是錯誤。"""
+    owner = await make_user()
+    project = await make_project(owner)
+
+    async with make_client() as client, joined(client, project.id, owner) as (ws, _):
+        await ws.send_json(cursor_move(1, 1))
+        await ws.send_json(CURSOR_LEAVE)
+        # 連線還在：再開一個分頁，manager 看得到兩條連線。
+        async with joined(client, project.id, owner):
+            assert len(presence_state._rooms[project.id].users[owner.id].connections) == 2
+
+
+# ── cursor：同一使用者多個分頁 ─────────────────────────────────────────
+
+
+async def test_cursor_from_any_tab_uses_the_same_user_identity(
+    make_client, make_user, make_project, make_member
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (tab1, _),
+    ):
+        roster = await receive(owner_ws)
+        async with joined(client, project.id, member) as (tab2, tab2_view):
+            # 兩個分頁仍然只是一個在線使用者。
+            assert user_ids(tab2_view) == user_ids(roster)
+            assert user_ids(roster).count(str(member.id)) == 1
+
+            await tab1.send_json(cursor_move(1, 1))
+            first = await receive(owner_ws)
+            await tab2.send_json(cursor_move(2, 2))
+            second = await receive(owner_ws)
+
+            # 同一個 user_id，後送的位置就是目前的位置。
+            assert first["user_id"] == second["user_id"] == str(member.id)
+            assert (second["x"], second["y"]) == (2.0, 2.0)
+
+
+async def test_cursor_is_not_sent_to_senders_other_tab(
+    make_client, make_user, make_project, make_member
+):
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (tab1, _),
+        joined(client, project.id, member) as (tab2, _),
+    ):
+        await receive(owner_ws)
+
+        await tab1.send_json(cursor_move(1, 1))
+        await receive(owner_ws)
+        await owner_ws.send_json(cursor_move(9, 9))
+
+        # tab2 收到的下一則是 owner 的游標，不是同一人另一個分頁的。
+        assert (await receive(tab2))["user_id"] == str(owner.id)
+
+
+async def test_closing_one_tab_does_not_remove_the_cursor(
+    make_client, make_user, make_project, make_member, presence_state
+):
+    """A1 關閉、A2 還在：使用者仍在線，其他人不會收到 leave，也不會收到新名單。"""
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    def member_connections() -> int:
+        return len(presence_state._rooms[project.id].users[member.id].connections)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (tab2, _),
+    ):
+        await receive(owner_ws)
+        async with joined(client, project.id, member) as (tab1, _):
+            await tab1.send_json(cursor_move(1, 1))
+            await receive(owner_ws)
+        await eventually(lambda: member_connections() == 1)
+
+        await tab2.send_json(cursor_move(2, 2))
+
+        # tab1 關閉之後 owner 收到的第一則就是 tab2 的移動：
+        # 中間沒有 presence.cursor.leave，也沒有 presence.snapshot。
+        after = await receive(owner_ws)
+        assert (after["type"], after["user_id"], after["x"]) == (
+            "presence.cursor",
+            str(member.id),
+            2.0,
+        )
+
+
+async def test_last_tab_closing_is_signalled_by_snapshot_only(
+    make_client, make_user, make_project, make_member
+):
+    """最後一條連線離開：離線由 snapshot 表達，不另外送 presence.cursor.leave。"""
+    owner, member, witness = await make_user(), await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+    await make_member(project, witness)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, witness) as (witness_ws, _),
+    ):
+        await receive(owner_ws)
+        async with joined(client, project.id, member) as (member_ws, _):
+            await receive(owner_ws)
+            await member_ws.send_json(cursor_move(1, 1))
+            await receive(owner_ws)
+
+        offline = await receive(owner_ws)
+        assert offline["type"] == "presence.snapshot"
+        assert str(member.id) not in user_ids(offline)
+
+        # 之後 owner 收到的下一則是 witness 的游標：member 離線沒有產生第二則訊息。
+        await witness_ws.send_json(cursor_move(7, 7))
+        assert (await receive(owner_ws))["user_id"] == str(witness.id)
+
+
+async def test_tab_can_send_leave_while_other_tab_keeps_cursor_alive(
+    make_client, make_user, make_project, make_member
+):
+    """client 主動送的 leave 只是暫時移除；同一人之後的 move 讓游標重新出現。"""
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (tab1, _),
+        joined(client, project.id, member) as (tab2, _),
+    ):
+        await receive(owner_ws)
+
+        await tab1.send_json(CURSOR_LEAVE)
+        assert (await receive(owner_ws))["type"] == "presence.cursor.leave"
+        await tab2.send_json(cursor_move(4, 4))
+        back = await receive(owner_ws)
+        assert (back["type"], back["user_id"]) == ("presence.cursor", str(member.id))

@@ -9,8 +9,8 @@
 asyncio 只會在 await 的地方切換 coroutine，同步函式從頭到尾不會被其他
 coroutine 插隊，所以「讀取 → 判斷 → 修改」天然就是一個 critical section。
 
-broadcast() 是唯一的 async 方法，它在第一個 await 之前就同步地組好 snapshot、
-複製好連線清單，之後的網路傳送只碰那份複本。這正是「持鎖修改 / 取複本 → 放鎖
+broadcast() 與 relay() 是僅有的 async 方法，它們在第一個 await 之前就同步地組好
+要送的內容、複製好連線清單，之後的網路傳送只碰那份複本。這正是「持鎖修改 / 取複本 → 放鎖
 → 傳送」的結構，只是 critical section 由「沒有 await」來保證，不是由鎖。
 
 加一把 asyncio.Lock 並不會多保護到任何東西，反而會讓人以為 await 可以放進
@@ -24,7 +24,8 @@ critical section。規則是：register / unregister 必須維持同步。哪天
 - 狀態在 process 記憶體，多實例 / 多 worker 各看各的，彼此看不到對方的使用者
 - 重啟即歸零，由 client 重連重建
 - 已建立的連線在存活期間不會重新驗證 token 與成員資格：token 過期或被移出
-  專案的人，在斷線重連之前仍留在名單上、也仍收得到名單
+  專案的人，在斷線重連之前仍留在名單上、也仍收得到名單與其他人的游標
+- 游標位置不保存：relay() 只是轉發，晚加入或重連的人要等對方再次移動才看得到
 """
 
 import asyncio
@@ -150,6 +151,34 @@ class PresenceManager:
             return
         payload = self.snapshot(project_id).model_dump(mode="json")
         targets = [conn for online in room.users.values() for conn in online.connections]
+
+        await asyncio.gather(*(self._send(project_id, conn, payload) for conn in targets))
+
+    async def relay(
+        self, project_id: uuid.UUID, sender_id: uuid.UUID, payload: dict[str, Any]
+    ) -> None:
+        """把一則訊息轉發給這個專案裡「其他使用者」的所有連線。
+
+        排除的單位是 user 而不是連線：sender 自己的其他分頁也不會收到。游標的
+        身分是 user_id，client 本來就不畫自己的游標，送過去只是浪費。
+
+        不保存任何東西、也不動 seq：名單沒有變。晚加入的人要等對方再次送出才會
+        收到——這是刻意的，保存位置就得另外處理它何時過期。
+
+        sender 已經不在名單上時（連線正在關閉）不轉發：其他人即將或已經收到
+        不含他的 snapshot，再送他的游標只會讓 client 收到名單外的人。
+
+        與 broadcast() 相同，第一個 await 之前就把連線清單定型。
+        """
+        room = self._rooms.get(project_id)
+        if room is None or sender_id not in room.users:
+            return
+        targets = [
+            conn
+            for user_id, online in room.users.items()
+            if user_id != sender_id
+            for conn in online.connections
+        ]
 
         await asyncio.gather(*(self._send(project_id, conn, payload) for conn in targets))
 
