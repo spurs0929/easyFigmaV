@@ -3,15 +3,17 @@
 ## v1 定位
 
 easyFigmaV v1 是一個具有完整 authentication、cloud
-persistence、membership 與 online presence 的多人專案系統。
+persistence、membership 與 online presence（在線名單與 remote cursor）
+的多人專案系統。
 
-它不是 real-time collaborative document editor。
+它不是 real-time collaborative document editor：看得到其他成員在線、
+看得到他們的游標，但文件內容不會即時同步。
 
 這個邊界是架構決策，不是「協作做到一半」。
 
 ## Core flow
 
-``` text
+```text
 Authentication
       ↓
 Project Membership
@@ -20,10 +22,11 @@ Project Membership
  │                  │
 REST CRUD       WebSocket
  │                  │
-Persistent       Presence
-Document          Snapshot
+Persistent       Presence snapshot
+Document         + cursor relay
  │                  │
 PostgreSQL       In-memory
+                 (cursor not stored)
 ```
 
 ## Persistent state 與 ephemeral state 分離
@@ -32,23 +35,30 @@ PostgreSQL       In-memory
 
 Document 必須：
 
--   process restart 後仍存在。
--   以 PostgreSQL 保存。
--   使用 `document_version` optimistic locking。
--   在 conflict 時保護較新的 server state。
+- process restart 後仍存在。
+- 以 PostgreSQL 保存。
+- 使用 `document_version` optimistic locking。
+- 在 conflict 時保護較新的 server state。
 
 ### Presence
 
 Presence 可以：
 
--   process restart 後消失。
--   reconnect 後重建。
--   只關心最新 snapshot。
--   不寫入 database。
+- process restart 後消失。
+- reconnect 後重建。
+- 只關心最新 snapshot。
+- 不寫入 database。
+
+Presence 包含兩種 ephemeral state，保證不同：
+
+- **在線名單**：authoritative，完整 snapshot + `seq`。
+- **Remote cursor**：best-effort，server 只轉發最新位置、不保存、不
+  編號；也不進入 document、autosave、`document_version` 或 undo
+  history。
 
 因此：
 
-``` text
+```text
 document_version = persistent concurrency
 presence seq      = transport freshness
 ```
@@ -71,22 +81,23 @@ WebSocket send」就完成。
 
 Server-authoritative operation model 會連帶需要：
 
--   operation schema。
--   ordering / sequence allocation。
--   idempotency。
--   reconnect replay。
--   snapshot 與 operation checkpoint 對齊。
--   optimistic apply / reconcile。
--   undo/redo semantics 改寫。
--   conflict semantics。
--   operation log retention / compaction。
--   多 instance coordination。
+- operation schema。
+- ordering / sequence allocation。
+- idempotency。
+- reconnect replay。
+- snapshot 與 operation checkpoint 對齊。
+- optimistic apply / reconcile。
+- undo/redo semantics 改寫。
+- conflict semantics。
+- operation log retention / compaction。
+- 多 instance coordination。
 
 這會改變 editor mutation path 與 persistence
 model，而不是一個可以安全塞進 Presence feature 的小延伸。
 
 v1 因此保留 snapshot document persistence，Presence 只解決 ephemeral
-online state。
+awareness（誰在線、游標在哪）。Remote cursor 已實作，但它轉發的是
+滑鼠位置，不是 document operation：上面列的每一項仍然沒有實作。
 
 ## 為什麼沒有 CRDT
 
@@ -95,11 +106,11 @@ online state。
 
 在需求尚未成立前導入 CRDT 會同時增加：
 
--   document model complexity。
--   debugging complexity。
--   persistence format complexity。
--   undo/redo complexity。
--   test state space。
+- document model complexity。
+- debugging complexity。
+- persistence format complexity。
+- undo/redo complexity。
+- test state space。
 
 v1 先用 optimistic locking 明確偵測 document conflict，而不是假裝
 conflict 不存在。
@@ -108,7 +119,7 @@ conflict 不存在。
 
 Current PresenceManager 是明確的 infrastructure boundary：
 
-``` text
+```text
 WebSocket endpoint
       ↓
 PresenceManager interface / behavior
@@ -126,7 +137,7 @@ development complexity，卻沒有解決目前存在的產品問題。
 
 v1 capability 只有：
 
-``` text
+```text
 owner  → read/edit/manage/delete
 member → read/edit
 ```
@@ -141,14 +152,17 @@ derived semantics。
 
 系統不是所有地方都追求同一種 consistency：
 
-  Area                Strategy                      Reason
-  ------------------- ----------------------------- -----------------------------
-  refresh rotation    CAS + grace                   concurrent browser requests
-  document save       optimistic locking            low expected write conflict
-  cloud autosave      single-flight + latest wins   snapshot semantics
-  presence            full snapshot + seq           ephemeral small state
-  membership insert   DB PK constraint              race-safe uniqueness
-  comment delete      mutation rowcount check       TOCTOU race
+Area Strategy Reason
+
+---
+
+refresh rotation CAS + grace concurrent browser requests
+document save optimistic locking low expected write conflict
+cloud autosave single-flight + latest wins snapshot semantics
+presence full snapshot + seq ephemeral small state
+remote cursor relay + latest-value only best-effort, high frequency
+membership insert DB PK constraint race-safe uniqueness
+comment delete mutation rowcount check TOCTOU race
 
 這些不是不同工程師各寫一套，而是依 resource 的持久性、衝突成本與
 workload 選擇不同保證。
@@ -157,28 +171,31 @@ workload 選擇不同保證。
 
 主要安全原則：
 
--   authentication 與 resource authorization 分離。
--   outsider 使用 404 anti-enumeration semantics。
--   owner-only operation 對已知 resource 的 member 使用 403。
--   WebSocket Origin 在 handshake 層另外驗證。
--   refresh credential 不放 JavaScript storage。
--   structured log / Sentry 不記錄 credential。
--   security-relevant invariant 同時考慮 application 與 database
-    boundary。
+- authentication 與 resource authorization 分離。
+- outsider 使用 404 anti-enumeration semantics。
+- owner-only operation 對已知 resource 的 member 使用 403。
+- WebSocket Origin 在 handshake 層另外驗證。
+- refresh credential 不放 JavaScript storage。
+- structured log / Sentry 不記錄 credential。
+- security-relevant invariant 同時考慮 application 與 database
+  boundary。
 
 ## Known v1 limitations
 
 v1 刻意接受：
 
--   Presence 只支援 single-instance in-memory coordination。
--   沒有 real-time document operation synchronization。
--   沒有 CRDT。
--   沒有 Redis。
--   沒有完整 RBAC。
--   沒有 pending invitation / email invitation workflow。
--   cloud unload flush 是 best-effort。
--   Presence connection 建立後不提供完整 continuous membership
-    revalidation。
+- Presence 與 remote cursor 只支援 single-instance in-memory
+  coordination。
+- 沒有 real-time document operation synchronization。
+- 沒有 CRDT。
+- 沒有 Redis。
+- 沒有完整 RBAC。
+- 沒有 pending invitation / email invitation workflow。
+- cloud unload flush 是 best-effort。
+- Presence connection 建立後不提供完整 continuous membership
+  revalidation；被移除的 member 在既有 socket 關閉前仍收得到在線名單
+  與其他人的游標。
+- Remote cursor 沒有 server-side rate limiting，位置不保存。
 
 這些限制應被視為 architecture boundary，而不是 README 裡藏起來的 TODO。
 
@@ -186,7 +203,7 @@ v1 刻意接受：
 
 若未來需求真的進入多人同步編輯，較自然的演進順序是：
 
-``` text
+```text
 existing membership / auth
         ↓
 operation protocol
@@ -200,5 +217,5 @@ reconnect replay / reconcile
 distributed coordination if scaling requires it
 ```
 
-Presence protocol 可以維持獨立，因為「誰在線」與「document operation
-如何一致」本來就是不同 concern。
+Presence protocol（含 cursor）可以維持獨立，因為「誰在線、游標在哪」與
+「document operation 如何一致」本來就是不同 concern。

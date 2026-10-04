@@ -7,8 +7,9 @@ easyFigmaV 是一個以 **Vue 3 + TypeScript + Konva** 建構編輯器前端，�
 專案除了畫布編輯，也實作 Authentication、Cloud Persistence、Membership
 Authorization、Comments、WebSocket Presence、CI 與 Observability。
 
-> 目前多人功能定位為 **Presence（在線成員狀態）**，不是 CRDT /
-> Operation-based 的多人即時共同編輯。
+> 目前多人功能定位為 **Presence（在線成員與 remote cursor）**，不是 CRDT /
+> Operation-based 的多人即時共同編輯。看得到其他成員的游標，不代表文件
+> 內容會即時同步。
 
 ---
 
@@ -91,6 +92,19 @@ Authorization、Comments、WebSocket Presence、CI 與 Observability。
 - Client 支援斷線重連、backoff 與 authentication refresh。
 - Presence 故障與 Editor 核心功能隔離，不讓即時狀態服務阻斷文件編輯。
 
+### Remote Cursor
+
+- 同一雲端專案的在線成員可以即時看到彼此的游標位置與名稱。
+- 與在線名單共用同一條 WebSocket；游標身分由已認證的連線決定，Client
+  不自行指定 `user_id`。
+- 以畫布的 world coordinate 傳輸，各 Client 依自己的 pan / zoom
+  換算，縮放或平移後仍指向同一個位置。
+- Client 以 50ms leading + trailing throttle 送出，只保留最新位置。
+- Cursor 是 ephemeral / best-effort state：Server 只轉發、不保存，也不
+  保證每一則都送達。
+- Cursor 不進入 document persistence、autosave、`document_version` 或
+  undo history。
+
 ---
 
 ## Architecture
@@ -139,7 +153,7 @@ flowchart LR
     MEMBER --> DB
     COMMENT --> DB
 
-    PC -->|WebSocket| WS
+    PC -->|"WebSocket: presence / cursor"| WS
     WS --> PM
     WS -. membership check .-> DB
 
@@ -152,10 +166,10 @@ easyFigmaV 將資料分成兩種不同生命週期：
 
 - **Durable State**：帳號、Project、Document、Membership、Comments
   儲存在 PostgreSQL。
-- **Ephemeral State**：Presence 僅保存在單一 Backend instance
-  的記憶體中。
+- **Ephemeral State**：Presence（在線名單）僅保存在單一 Backend instance
+  的記憶體中；Remote Cursor 只經由 Server 轉發，不保存位置。
 
-因此 WebSocket Presence 不參與文件同步；文件仍透過 REST
+因此 WebSocket Presence / Cursor 不參與文件同步；文件仍透過 REST
 API、`document_version` 與 optimistic locking 維持一致性。
 
 ---
@@ -171,7 +185,7 @@ Password Security Argon2id
 Authorization Project membership-based authorization
 Document Consistency `document_version` optimistic locking
 Cloud Auto-save Single-flight + latest-value coalescing
-Real-time State WebSocket snapshot-based Presence
+Real-time State WebSocket snapshot-based Presence + relayed remote cursor
 Database PostgreSQL + SQLAlchemy 2.0 async + Alembic
 Logging structlog + Request ID correlation
 Error Monitoring Sentry with sensitive-data filtering
@@ -247,8 +261,8 @@ membership row 造成兩個 truth source。
 
 ### Snapshot-based Presence
 
-Presence 的目標是回答「現在有哪些成員正在這個專案裡？」，而不是同步
-Canvas operation。
+Presence 的目標是回答「現在有哪些成員正在這個專案裡、他們的游標在
+哪裡？」，而不是同步 Canvas operation。
 
 目前採用完整 snapshot 而非 join / leave delta：
 
@@ -260,6 +274,19 @@ Canvas operation。
 PresenceManager 目前是單一 process 的 in-memory state，因此 v1 維持單一
 Backend instance。未來若需要 horizontal scaling，可再將 Presence state /
 transport 移至 Redis 等共享基礎設施。
+
+### Remote Cursor as Ephemeral State
+
+在線名單與游標採用不同的保證：
+
+- 在線名單是 authoritative state，使用完整 snapshot 與 `seq`。
+- 游標是 latest-state 的 best-effort 資料：Server 不保存、不編號，收件端
+  跟不上時只送最新位置；Client 對壞掉的 cursor message 只丟棄該則，不
+  影響在線名單。
+
+Remote Cursor 以 DOM overlay 繪製，不屬於 Konva 的文件圖層，因此不會被
+選取、變形或存進文件。它提供的是 collaboration awareness，不是共同文件
+編輯。
 
 ---
 
@@ -319,6 +346,7 @@ Backend CI 將 migration validation 與 pytest schema 分開，避免 Alembic
 - Membership authorization
 - Comments
 - WebSocket authentication / Origin / Presence lifecycle
+- Remote cursor protocol、relay、throttle 與 lifecycle
 - Frontend auth / session behavior
 - Editor stores and UI behavior
 
@@ -339,7 +367,7 @@ flowchart LR
 
     B -->|HTTPS| FE
     B -->|HTTPS REST| API
-    B -->|WSS Presence| API
+    B -->|WSS Presence / Cursor| API
     API --> DB
 ```
 
@@ -358,14 +386,17 @@ easyFigmaV v1 刻意限制協作系統範圍。
 - Owner / Member authorization
 - Server-backed comments
 - Online member Presence
+- Remote cursor（ephemeral，不保存、不參與文件同步）
 - Optimistic document concurrency control
 
 **目前不包含：**
 
 - CRDT
-- Operation-based collaborative editing
-- 即時 cursor / selection synchronization
-- Redis-backed multi-instance Presence
+- Operation-based collaborative editing / OT
+- 即時文件內容同步（persistent document synchronization）
+- Selection synchronization
+- Remote cursor 的 server-side rate limiting、smoothing、位置保存
+- Redis-backed multi-instance Presence / Cursor
 - 完整 RBAC
 - Invitation token / email invitation flow
 - Project ownership transfer

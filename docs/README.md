@@ -6,11 +6,11 @@
 
 文件重點不是逐 commit 的開發歷程，而是：
 
--   系統目前如何運作。
--   為什麼選擇目前的設計。
--   曾評估哪些替代方案，以及沒有採用的原因。
--   安全性、併發、效能與可維護性之間的取捨。
--   v1 刻意接受的限制與未實作範圍。
+- 系統目前如何運作。
+- 為什麼選擇目前的設計。
+- 曾評估哪些替代方案，以及沒有採用的原因。
+- 安全性、併發、效能與可維護性之間的取捨。
+- v1 刻意接受的限制與未實作範圍。
 
 ## 文件索引
 
@@ -30,7 +30,7 @@
 
 ## Architecture at a Glance
 
-``` text
+```text
 Vue 3 / Pinia / Konva
         │
         ├── REST ───────────────┐
@@ -52,5 +52,6 @@ Vue 3 / Pinia / Konva
 
 Persistent document state 與 ephemeral presence state 刻意分離：document
 由 PostgreSQL + `document_version` 保證持久化與 optimistic
-concurrency；presence 只維護「現在誰在線」，可在 process restart
-後重建。
+concurrency；presence 只維護「現在誰在線、游標在哪」。在線名單會隨
+WebSocket connection 重新建立；游標位置不保存，process restart 或
+reconnect 之後要等對方送出新的 cursor update 才會重新出現。
