@@ -143,20 +143,6 @@ const HANDLE_ATTR = {
 /** 拖曳進行中旗標；由 watchEffect 讀取以決定是否更新覆蓋層。 */
 let _isDragging = false
 
-// ── Comment Placement ──────────────────────────────────────────────────────────
-
-/**
- * 最近一次新增的 comment id，用於讓對應 CommentPin 自動開啟 popover。
- * autoOpen 是 one-time flag（CommentPin 只在 onMounted 消費一次），
- * 因此不需主動清空：放置下一個評論時自然覆寫，舊 Pin 已 mounted 不受影響。
- */
-const _autoOpenCommentId = ref<string | null>(null)
-
-function placeComment(world: Point): void {
-  const comment = commentStore.add(world.x, world.y)
-  _autoOpenCommentId.value = comment.id
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /** 子元素座標（相對 parent）→ 世界絕對座標，遞迴處理巢狀群組。 */
@@ -917,6 +903,23 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
     startPanning()
     return
   }
+
+  // 留言框開著時，點畫布的意思是「關掉它」。
+  //
+  // 這件事在這裡決定而不是交給 document 的 mousedown listener：同一次點擊要不要
+  // 放新的留言，必須跟關閉一起判斷。分開處理的話，兩邊各自看到的狀態會差一步——
+  // 不是剛開的留言框被自己關掉，就是關掉的同時又放了一個新的。
+  //
+  // requestClose 在留言框有未送出的文字時不會關（store 會提醒使用者），
+  // 所以點畫布不會讓打到一半的內容消失。平移不受影響：留言框會跟著圖釘移動。
+  if (commentStore.hasOpenPopover) {
+    // 沒關成（有未送出的文字）時留言框還在，而且剛把焦點帶回輸入框。
+    // 擋掉 mousedown 的預設行為，焦點才不會緊接著被移到 body。
+    if (!commentStore.requestClose()) e.evt.preventDefault()
+    // 留言工具：這一下只負責關閉，不再放新的留言。下一次點擊才會開始新的草稿。
+    // 其他工具照常執行它們自己的動作（選取、框選、畫圖）。
+    if (tool === ToolType.Comment) return
+  }
   if (tool === ToolType.Text && targetEl?.kind === ElementKind.Text) {
     toolStore.setTool(ToolType.Move)
     beginTextEdit(targetEl.id)
@@ -935,9 +938,14 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
     startMarquee(world)
     return
   }
-  // Comment 工具 → 放置釘針
+  // Comment 工具 → 開始一則新留言。這裡只建立草稿（一個位置），留言要到
+  // 使用者送出之後才真的存在；取消的話畫布上什麼都不會留下。
   if (tool === ToolType.Comment) {
-    placeComment(world)
+    if (commentStore.startDraft(world.x, world.y)) {
+      // mousedown 的預設行為會把焦點移到被點的元素（畫布不能聚焦，等於移到 body），
+      // 而且發生在留言框掛載、輸入框取得焦點之後。不擋掉的話，輸入框一出現就失焦。
+      e.evt.preventDefault()
+    }
     return
   }
   if (tool === ToolType.Text) {
@@ -1305,6 +1313,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // 留言框與草稿屬於這個畫布畫面。離開時不關的話，本機草稿之間切換
+  // （`/` → 專案列表 → `/`）回來會看到上次沒關的留言框。
+  commentStore.close()
   commentStore.flush()
   _resizeObserver?.disconnect()
   measurementService.destroy()
@@ -1323,16 +1334,8 @@ onUnmounted(() => {
     <!-- 右鍵選單：Teleport 至 body 避免與 Konva DOM 衝突 -->
     <SelectionContextMenu :context-menu="contextMenu" @close="closeContextMenu" />
 
-    <!-- Comment overlay：每個評論渲染一個釘針，跟隨 viewport 座標 -->
-    <CommentOverlay
-      :comments="commentStore.comments"
-      :viewport="viewportStore.viewport"
-      :auto-open-comment-id="_autoOpenCommentId"
-      :canvas-rect="commentOverlayRect"
-      @update-text="commentStore.updateText"
-      @toggle-resolved="commentStore.toggleResolved"
-      @delete="commentStore.remove"
-    />
+    <!-- Comment overlay：圖釘與留言框。留言資料由覆疊層直接向 commentStore 取 -->
+    <CommentOverlay :viewport="viewportStore.viewport" :canvas-rect="commentOverlayRect" />
 
     <!-- 文字編輯 overlay：絕對定位於 canvas container，跟隨 viewport 座標更新 -->
     <Teleport to="body">

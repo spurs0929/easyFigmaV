@@ -1,119 +1,67 @@
-.comment-pin-layer {
-  position: absolute;
-  left: 0;
-  top: 0;
-  pointer-events: none;
-}
-
+// 圖釘本體。定位點是圖釘的尖端：left / top 指向留言在畫布上的位置，
+// 圖形往上、置中畫出去。
 .comment-pin {
   position: absolute;
   transform: translate(-50%, -100%);
+  transform-origin: 50% 100%;
   background: none;
   border: none;
   padding: 0;
+  line-height: 0;
   cursor: pointer;
-  transition: transform 0.1s ease;
+  transition:
+    transform 0.1s ease,
+    filter 0.1s ease;
   z-index: 20;
+  // 覆疊層本身不接收滑鼠事件，圖釘各自打開
   pointer-events: auto;
+
+  &__body {
+    fill: #6366f1;
+    transition: fill 0.1s ease;
+  }
 
   &:hover {
     transform: translate(-50%, -100%) scale(1.15);
   }
 
   &:focus-visible {
-    outline: 2px solid #6366f1;
+    outline: 2px solid #a5b4fc;
     outline-offset: 2px;
-    border-radius: 50%;
+    border-radius: 10px;
   }
 
+  // 已解決：退到背景，但仍然點得到
   &--resolved {
-    opacity: 0.55;
-  }
-}
-
-.comment-popover {
-  position: fixed;
-  z-index: 200;
-  width: 240px;
-  background: #1e1e1e;
-  border: 1px solid #333;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: auto;
-
-  &__textarea {
-    width: 100%;
-    box-sizing: border-box;
-    background: #141414;
-    border: 1px solid #444;
-    border-radius: 4px;
-    color: #c9d1d9;
-    font-size: 13px;
-    font-family: inherit;
-    padding: 6px 8px;
-    resize: vertical;
-    outline: none;
-
-    &:focus {
-      border-color: #6366f1;
+    .comment-pin__body {
+      fill: #4b5563;
     }
   }
 
-  &__actions {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 6px;
+  // 留言框開著的那一個：放大並加上外圈，一眼看得出留言框屬於誰
+  &--active {
+    transform: translate(-50%, -100%) scale(1.2);
+    filter: drop-shadow(0 0 0 #fff) drop-shadow(0 0 6px rgba(99, 102, 241, 0.9));
+    z-index: 21;
+
+    &:hover {
+      transform: translate(-50%, -100%) scale(1.2);
+    }
   }
 
-  &__actions-right {
-    display: flex;
-    gap: 6px;
-  }
+  // 還沒送出的留言：虛線外框、半透明，看得出它還不是正式的留言。
+  // 不接收滑鼠事件——它沒有內容可以開啟。
+  &--draft {
+    pointer-events: none;
+    cursor: default;
+    transform: translate(-50%, -100%) scale(1.2);
+    z-index: 21;
 
-  &__btn {
-    font-size: 12px;
-    font-family: inherit;
-    padding: 4px 10px;
-    border-radius: 4px;
-    border: none;
-    cursor: pointer;
-    transition: background 0.1s;
-
-    &--resolve {
-      background: transparent;
-      color: #9ca3af;
-
-      &:hover {
-        color: #fff;
-      }
-    }
-
-    &--delete {
-      background: transparent;
-      color: #f87171;
-
-      &:hover {
-        background: rgba(248, 113, 113, 0.1);
-      }
-    }
-
-    &--submit {
-      background: #6366f1;
-      color: #fff;
-
-      &:hover:not(:disabled) {
-        background: #4f46e5;
-      }
-
-      &:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-      }
+    .comment-pin__body {
+      fill: rgba(99, 102, 241, 0.35);
+      stroke: #a5b4fc;
+      stroke-width: 1.2;
+      stroke-dasharray: 3 2;
     }
   }
 }

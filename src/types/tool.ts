@@ -186,7 +186,9 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolDef[]> = {
       group: ToolGroup.Comment,
       shortcuts: [{ key: 'c' }],
       icon: 'M2,2 H14 V10 H8 L5,14 L5,10 H2 Z',
-      cursor: 'default',
+      // 與其他「點一下就放東西」的工具一致。原本是 default，游標跟選取工具
+      // 一模一樣，只看畫布看不出現在點下去會放留言。
+      cursor: 'crosshair',
     },
   ],
   [ToolGroup.Hand]: [
