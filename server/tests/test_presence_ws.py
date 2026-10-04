@@ -933,3 +933,53 @@ async def test_tab_can_send_leave_while_other_tab_keeps_cursor_alive(
         await tab2.send_json(cursor_move(4, 4))
         back = await receive(owner_ws)
         assert (back["type"], back["user_id"]) == ("presence.cursor", str(member.id))
+
+
+# ── cursor：收件端很慢 ─────────────────────────────────────────────────
+
+
+class HangingConnection:
+    """send 永遠不返回的收件連線：TCP buffer 滿了、對方不再讀取的 client。"""
+
+    async def send_json(self, data) -> None:
+        await asyncio.Event().wait()
+
+    async def close(self, code: int = 1000) -> None:
+        pass
+
+
+async def test_slow_recipient_does_not_stall_the_senders_next_cursor(
+    make_client, make_user, make_project, make_member, presence_state
+):
+    """regression：接收迴圈不等收件者。
+
+    SEND_TIMEOUT_SECONDS 是 5 秒、這裡每次 receive 只等 RECEIVE_TIMEOUT（2 秒）：
+    如果 sender 的接收迴圈要等那個卡住的收件端，第二則游標就不可能在時限內抵達。
+    """
+    owner, member = await make_user(), await make_user()
+    project = await make_project(owner)
+    await make_member(project, member)
+    stuck_user = PresenceUser(user_id=uuid.uuid4(), display_name=None, role="member")
+    stuck = HangingConnection()
+
+    async with (
+        make_client() as client,
+        joined(client, project.id, owner) as (owner_ws, _),
+        joined(client, project.id, member) as (member_ws, _),
+    ):
+        await receive(owner_ws)
+        presence_state.register(project.id, stuck_user, stuck)
+
+        for x in (1.0, 2.0, 3.0):
+            await owner_ws.send_json(cursor_move(x, 0))
+            assert (await receive(member_ws))["x"] == x
+
+        # 卡住的那條連線只佔一個 task、一格信箱，不隨訊息數量成長。
+        outbox = presence_state._outboxes[stuck]
+        assert outbox.task is not None and not outbox.task.done()
+        assert len(outbox.pending) <= 1
+
+        presence_state.unregister(project.id, stuck_user.user_id, stuck)
+
+    await eventually(lambda: presence_state._rooms == {})
+    assert presence_state._outboxes == {}

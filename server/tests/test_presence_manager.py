@@ -331,8 +331,41 @@ async def test_roster_change_during_broadcast(manager, project_id):
 
 
 # ── relay ──────────────────────────────────────────────────────────────
+#
+# relay() 是同步的，只把游標放進收件連線的信箱；實際傳送在背景 task。
+# 測試用 flush() 等信箱送完再斷言。
 
-CURSOR = {"type": "presence.cursor", "x": 1.0, "y": 2.0}
+
+class GatedConnection(FakeConnection):
+    """send 會停在 gate 上，直到測試放行：用來模擬「還在送上一則」的收件端。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.sending = asyncio.Event()
+
+    async def send_json(self, data: Any) -> None:
+        self.sending.set()
+        await self.gate.wait()
+        await super().send_json(data)
+
+
+def cursor(x: float) -> dict[str, Any]:
+    return {"type": "presence.cursor", "x": x, "y": 0.0}
+
+
+CURSOR = cursor(1.0)
+LEAVE = {"type": "presence.cursor.leave"}
+
+
+def drain_tasks(manager: PresenceManager) -> list[asyncio.Task]:
+    return [box.task for box in manager._outboxes.values() if box.task is not None]
+
+
+async def flush(manager: PresenceManager) -> None:
+    """等所有信箱送完（或失敗）。"""
+    while tasks := drain_tasks(manager):
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def test_relay_reaches_other_users_but_not_the_sender(manager, project_id):
@@ -342,7 +375,8 @@ async def test_relay_reaches_other_users_but_not_the_sender(manager, project_id)
     manager.register(project_id, bob, bob_conn)
     manager.register(project_id, carol, carol_conn)
 
-    await manager.relay(project_id, alice.user_id, CURSOR)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await flush(manager)
 
     assert alice_conn.sent == []
     assert bob_conn.sent == [CURSOR]
@@ -359,7 +393,8 @@ async def test_relay_skips_every_tab_of_the_sender(manager, project_id):
     manager.register(project_id, bob, bob_tab1)
     manager.register(project_id, bob, bob_tab2)
 
-    await manager.relay(project_id, alice.user_id, CURSOR)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await flush(manager)
 
     assert alice_tab1.sent == [] and alice_tab2.sent == []
     assert bob_tab1.sent == [CURSOR] and bob_tab2.sent == [CURSOR]
@@ -373,26 +408,30 @@ async def test_relay_does_not_leak_to_other_projects(manager):
     manager.register(project_a, bob, bob_conn)
     manager.register(project_b, outsider, outsider_conn)
 
-    await manager.relay(project_a, alice.user_id, CURSOR)
+    manager.relay(project_a, alice.user_id, CURSOR)
+    await flush(manager)
 
     assert bob_conn.sent == [CURSOR]
     assert outsider_conn.sent == []
 
 
 async def test_relay_keeps_no_state(manager, project_id):
-    """轉發不是名單變動：seq、名單與 room 的內容都和轉發之前一模一樣。"""
+    """轉發不是名單變動：seq 與名單不變，送完之後信箱裡也沒有留下任何位置。"""
     alice, bob = make_user(), make_user()
     manager.register(project_id, alice, FakeConnection())
     manager.register(project_id, bob, FakeConnection())
     before = manager.snapshot(project_id)
 
-    await manager.relay(project_id, alice.user_id, CURSOR)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await flush(manager)
 
     assert manager.snapshot(project_id) == before
+    assert all(not box.pending for box in manager._outboxes.values())
     # 晚加入的人只拿得到名單，沒有任何人的游標可以補給他。
     late = FakeConnection()
     manager.register(project_id, make_user(), late)
     await manager.broadcast(project_id)
+    await flush(manager)
     assert [message["type"] for message in late.sent] == ["presence.snapshot"]
 
 
@@ -401,26 +440,243 @@ async def test_relay_from_user_who_is_not_online_is_dropped(manager, project_id)
     bob_conn = FakeConnection()
     manager.register(project_id, make_user(), bob_conn)
 
-    await manager.relay(project_id, uuid.uuid4(), CURSOR)
+    manager.relay(project_id, uuid.uuid4(), CURSOR)
+    await flush(manager)
 
     assert bob_conn.sent == []
+    assert manager._outboxes == {}
 
 
 async def test_relay_to_empty_project_is_noop(manager, project_id):
-    await manager.relay(project_id, uuid.uuid4(), CURSOR)
+    manager.relay(project_id, uuid.uuid4(), CURSOR)
     assert manager._rooms == {}
+    assert manager._outboxes == {}
 
 
-async def test_broken_connection_does_not_break_relay(manager, project_id):
+async def test_every_cursor_is_delivered_in_order_when_recipient_keeps_up(manager, project_id):
+    """收件端跟得上時不丟任何一則：只留最新的一格不等於只送最後一則。"""
+    alice, bob = make_user(), make_user()
+    bob_conn = FakeConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, bob_conn)
+
+    sent = [cursor(1.0), cursor(2.0), LEAVE, cursor(3.0)]
+    for payload in sent:
+        manager.relay(project_id, alice.user_id, payload)
+        await flush(manager)
+
+    assert bob_conn.sent == sent
+
+
+# ── relay：收件端很慢或壞掉 ────────────────────────────────────────────
+
+
+async def test_slow_recipient_does_not_block_sender_or_healthy_recipients(manager, project_id):
+    """regression：一個卡住的收件端，不會讓 sender 的下一則游標等它。
+
+    relay() 是同步函式，這裡完全沒有 await 過那個卡住的連線——如果 relay() 還在
+    等收件端，這個測試會在第一次呼叫就停住。
+    """
+    alice, slow_user, healthy_user = make_user(), make_user(), make_user()
+    slow, healthy = FakeConnection(hang=True), FakeConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, slow_user, slow)
+    manager.register(project_id, healthy_user, healthy)
+
+    for x in (1.0, 2.0, 3.0):
+        manager.relay(project_id, alice.user_id, cursor(x))
+        # 只讓出執行權，沒有等任何逾時：healthy 的傳送不需要 slow 先完成。
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert healthy.sent[-1] == cursor(x)
+
+    assert healthy.sent == [cursor(1.0), cursor(2.0), cursor(3.0)]
+    assert slow.sent == []
+    assert slow.closed_with is None  # 還沒逾時，仍在等它
+
+    manager.unregister(project_id, slow_user.user_id, slow)
+
+
+async def test_pending_work_is_bounded_regardless_of_message_rate(manager, project_id):
+    """regression：不管 sender 送多快，每條連線最多一個 task、每個 sender 最多一格。"""
+    alice, carol, bob = make_user(), make_user(), make_user()
+    stuck = GatedConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, carol, FakeConnection())
+    manager.register(project_id, bob, stuck)
+    tasks_before = len(asyncio.all_tasks())
+
+    for x in range(1000):
+        manager.relay(project_id, alice.user_id, cursor(float(x)))
+        manager.relay(project_id, carol.user_id, cursor(float(-x)))
+        if x == 0:
+            await stuck.sending.wait()  # bob 的 task 已經卡在第一則上
+
+    outbox = manager._outboxes[stuck]
+    # 兩個 sender 各一格，不是 2000 則。
+    assert set(outbox.pending) == {alice.user_id, carol.user_id}
+    # 整個 manager 的 task 數 ≤ 連線數（3），與送了幾則無關。
+    assert len(drain_tasks(manager)) <= 3
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(asyncio.all_tasks()) - tasks_before == 1  # 只剩卡住的那一個
+
+    stuck.gate.set()
+    await flush(manager)
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+async def test_slow_recipient_skips_to_latest_position(manager, project_id):
+    """收件端送完上一則之後，拿到的是每個 sender 最新的位置，不是積壓的舊座標。"""
+    alice, bob = make_user(), make_user()
+    bob_conn = GatedConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, bob_conn)
+
+    manager.relay(project_id, alice.user_id, cursor(1.0))
+    await bob_conn.sending.wait()
+    for x in (2.0, 3.0, 4.0):
+        manager.relay(project_id, alice.user_id, cursor(x))
+
+    bob_conn.gate.set()
+    await flush(manager)
+
+    assert bob_conn.sent == [cursor(1.0), cursor(4.0)]
+
+
+async def test_leave_replaces_a_pending_move_and_vice_versa(manager, project_id):
+    """move 與 leave 共用同一格：最後的狀態一定是最後送出的那一則。"""
+    alice, bob = make_user(), make_user()
+    bob_conn = GatedConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, bob_conn)
+
+    manager.relay(project_id, alice.user_id, cursor(1.0))
+    await bob_conn.sending.wait()
+    manager.relay(project_id, alice.user_id, cursor(2.0))
+    manager.relay(project_id, alice.user_id, LEAVE)
+
+    bob_conn.gate.set()
+    await flush(manager)
+
+    assert bob_conn.sent == [cursor(1.0), LEAVE]
+
+
+async def test_broken_recipient_is_closed_but_not_unregistered(manager, project_id):
     alice, bob, carol = make_user(), make_user(), make_user()
     broken, healthy = FakeConnection(fail=True), FakeConnection()
     manager.register(project_id, alice, FakeConnection())
     manager.register(project_id, bob, broken)
     manager.register(project_id, carol, healthy)
 
-    await manager.relay(project_id, alice.user_id, CURSOR)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await flush(manager)
 
     assert healthy.sent == [CURSOR]
     # 與 broadcast 相同：只關閉、不 unregister，cleanup 交給那條連線的擁有者。
     assert broken.closed_with == CLOSE_SEND_FAILED
     assert bob.user_id in online_ids(manager, project_id)
+
+
+async def test_timed_out_recipient_is_closed(manager, project_id, monkeypatch):
+    monkeypatch.setattr(presence_module, "SEND_TIMEOUT_SECONDS", 0.05)
+    alice, bob = make_user(), make_user()
+    hung = FakeConnection(hang=True)
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, hung)
+
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await flush(manager)
+
+    assert hung.closed_with == CLOSE_SEND_FAILED
+
+
+async def test_nothing_is_queued_for_a_recipient_after_it_failed(manager, project_id):
+    """傳送失敗的連線在被 unregister 之前，不會再累積訊息、也不會再啟動 task。"""
+    alice, bob = make_user(), make_user()
+    broken = FakeConnection(fail=True)
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, broken)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await flush(manager)
+
+    for x in range(100):
+        manager.relay(project_id, alice.user_id, cursor(float(x)))
+
+    assert manager._outboxes[broken].pending == {}
+    assert drain_tasks(manager) == []
+
+
+# ── relay：cleanup ─────────────────────────────────────────────────────
+
+
+async def test_unregister_cancels_the_pending_send(manager, project_id):
+    """連線離開時，卡在傳送中的 task 一併取消，不留下 orphan task。"""
+    alice, bob = make_user(), make_user()
+    hung = FakeConnection(hang=True)
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, hung)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await asyncio.sleep(0)
+    (task,) = drain_tasks(manager)
+
+    manager.unregister(project_id, bob.user_id, hung)
+
+    assert hung not in manager._outboxes
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+async def test_emptied_project_leaves_no_outbox_or_task(manager, project_id):
+    alice, bob = make_user(), make_user()
+    alice_conn, bob_conn = FakeConnection(), FakeConnection(hang=True)
+    manager.register(project_id, alice, alice_conn)
+    manager.register(project_id, bob, bob_conn)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    manager.relay(project_id, bob.user_id, CURSOR)
+    await asyncio.sleep(0)
+
+    manager.unregister(project_id, alice.user_id, alice_conn)
+    manager.unregister(project_id, bob.user_id, bob_conn)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert manager._rooms == {}
+    assert manager._outboxes == {}
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
+async def test_closing_one_tab_keeps_the_other_tabs_outbox(manager, project_id):
+    alice, bob = make_user(), make_user()
+    bob_tab1, bob_tab2 = FakeConnection(), GatedConnection()
+    manager.register(project_id, alice, FakeConnection())
+    manager.register(project_id, bob, bob_tab1)
+    manager.register(project_id, bob, bob_tab2)
+    manager.relay(project_id, alice.user_id, CURSOR)
+    await bob_tab2.sending.wait()
+
+    manager.unregister(project_id, bob.user_id, bob_tab1)
+    bob_tab2.gate.set()
+    await flush(manager)
+
+    assert bob_tab2.sent == [CURSOR]
+
+
+async def test_queued_cursor_of_user_who_went_offline_is_dropped(manager, project_id):
+    """還沒送出的游標不會在「他已離線」之後才送到。"""
+    alice, carol, bob = make_user(), make_user(), make_user()
+    alice_conn, bob_conn = FakeConnection(), GatedConnection()
+    manager.register(project_id, alice, alice_conn)
+    manager.register(project_id, carol, FakeConnection())
+    manager.register(project_id, bob, bob_conn)
+
+    manager.relay(project_id, carol.user_id, cursor(1.0))
+    await bob_conn.sending.wait()  # bob 正在收 carol 的游標
+    manager.relay(project_id, alice.user_id, cursor(2.0))  # alice 的還在信箱裡
+    manager.unregister(project_id, alice.user_id, alice_conn)
+
+    bob_conn.gate.set()
+    await flush(manager)
+
+    assert bob_conn.sent == [cursor(1.0)]

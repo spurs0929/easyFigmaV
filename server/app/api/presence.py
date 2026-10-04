@@ -202,9 +202,8 @@ async def _relay_cursor_messages(
     一扇門。死連線的偵測不靠應用層 heartbeat——uvicorn 會送 protocol 層的 ping，
     對方沒回應就斷線，這裡的 receive() 會因此收到 disconnect。
 
-    轉發是 await 完才讀下一則：同一個 sender 的訊息因此依序送達，後面的位置
-    不會被前面的蓋掉。代價是某個收件端很慢時，sender 的下一則要等到它送完或
-    逾時（PresenceManager 的 SEND_TIMEOUT_SECONDS）才會處理。
+    這個迴圈不等任何收件者：relay() 只是把游標放進每個收件連線的信箱就返回，
+    某個收件端很慢或壞掉，都不會延後這裡讀下一則訊息（見 PresenceManager.relay）。
 
     這裡不碰資料庫：每秒數十則的訊息不能各查一次成員資格（見模組說明的已知限制）。
     """
@@ -219,7 +218,7 @@ async def _relay_cursor_messages(
             if websocket.application_state == WebSocketState.CONNECTED:
                 await websocket.close(code=CLOSE_INVALID_MESSAGE)
             return
-        await presence.relay(project_id, user.user_id, payload)
+        presence.relay(project_id, user.user_id, payload)
 
 
 def _cursor_payload(
