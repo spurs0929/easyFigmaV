@@ -41,7 +41,11 @@ export interface ShortcutKey {
   key: string
   /** 明確設為 true 才檢查 Shift 狀態；undefined 表示「不在意 Shift」 */
   shift?: boolean
-  /** 明確設為 true 才檢查 Ctrl/Cmd 狀態；undefined 表示「不在意 Ctrl」 */
+  /**
+   * 是否需要按住 Ctrl/Cmd。undefined 等同 false：沒有宣告的快捷鍵在 Ctrl/Cmd
+   * 按下時不會觸發，Ctrl+C、Ctrl+V、Ctrl+R 等組合才會留給瀏覽器與編輯指令。
+   * 與 shift 不同，這裡沒有「不在意」的語意。
+   */
   ctrl?: boolean
 }
 
@@ -229,8 +233,11 @@ export const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA'])
  * 比對規則：
  *   1. 具體度高（有修飾鍵限制）的工具優先排在結果陣列前面，
  *      確保 Ctrl+K 不被純 K 的工具搶先。
- *   2. shift / ctrl 若在 ShortcutKey 中為 undefined，表示「不在意該修飾鍵」。
- *   3. 若事件來自輸入框（INPUT / TEXTAREA），回傳空陣列。
+ *   2. shift 若在 ShortcutKey 中為 undefined，表示「不在意 Shift」。
+ *   3. ctrl 若為 undefined，視為 false：Ctrl/Cmd 按下時不匹配。
+ *      工具快捷鍵都是單鍵，不這樣做的話 Ctrl+C 會切到 Comment、
+ *      Ctrl+R 會切到 Rectangle 並擋掉瀏覽器的重新整理。
+ *   4. 若事件來自輸入框（INPUT / TEXTAREA），回傳空陣列。
  *
  * 回傳 ToolDef[]（空陣列表示無匹配），讓呼叫方決定取第一個或循環切換。
  */
@@ -255,7 +262,7 @@ export function matchShortcut(
       if (
         sc.key === key &&
         (sc.shift === undefined || sc.shift === shift) &&
-        (sc.ctrl === undefined || sc.ctrl === ctrl)
+        (sc.ctrl ?? false) === ctrl
       ) {
         matched.push(tool)
         break // 同一工具只加一次
