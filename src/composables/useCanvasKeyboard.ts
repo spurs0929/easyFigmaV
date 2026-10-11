@@ -28,6 +28,22 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
     return _altHeld
   }
 
+  /**
+   * 手勢進行中不可 Undo / Redo。
+   *
+   * 拖曳、縮放進行到一半時，store 已經被改動但還沒推快照；繪製、Pen、Pencil 的草稿
+   * 則還在 store 之外。這時把 store 換回上一筆，手勢卻會繼續，結束時再推的那一筆
+   * 快照會截斷 redo——被 undo 掉的那一步就永遠拿不回來。
+   *
+   * 所以只要不是 idle 就整個忽略，包含 Pen：Pen 繪製中的 Ctrl+Z 不做「退回上一個
+   * 錨點」，要刪錨點用 Backspace / Delete。
+   *
+   * 呼叫端仍然要先 preventDefault：被忽略時也不能讓瀏覽器執行它自己的復原 / 重做。
+   */
+  function canUseHistory(): boolean {
+    return opts.getGesture().kind === 'idle'
+  }
+
   function keyCombo(e: KeyboardEvent): string {
     const parts: string[] = []
     if (e.ctrlKey || e.metaKey) parts.push('ctrl')
@@ -55,6 +71,7 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
       'ctrl+z',
       (e) => {
         e.preventDefault()
+        if (!canUseHistory()) return
         elementStore.undo()
       },
     ],
@@ -62,6 +79,7 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
       'ctrl+y',
       (e) => {
         e.preventDefault()
+        if (!canUseHistory()) return
         elementStore.redo()
       },
     ],
@@ -69,6 +87,7 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
       'ctrl+shift+z',
       (e) => {
         e.preventDefault()
+        if (!canUseHistory()) return
         elementStore.redo()
       },
     ],
