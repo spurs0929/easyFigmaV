@@ -5,10 +5,17 @@ import type { CanvasElement } from '@/types/element'
 export function useCanvasActions() {
   const elementStore = useElementStore()
 
+  /**
+   * 刪除目前選取的所有元素，整批是一筆 undo。
+   *
+   * 鍵盤的 Delete / Backspace、畫布與圖層面板的右鍵選單都走這裡。
+   * 不能逐一呼叫 remove()：那樣每個元素各佔一筆 undo，還原一次多選刪除要按 N 次，
+   * 中間每一步都是只刪了一部分的狀態。
+   */
   function deleteSelected(): void {
     const ids = [...elementStore.selectedIds]
     if (ids.length === 0) return
-    for (const id of ids) elementStore.remove(id)
+    elementStore.removeMany(ids)
   }
 
   function rootLevelSelectedIds(): string[] {
