@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useToolStore } from '@/store/tool'
 import { TOOL_GROUPS, ToolGroup, ToolType, matchShortcut, type ToolDef } from '@/types/tool'
@@ -14,16 +14,20 @@ type KeyInit = {
 }
 
 /**
- * 建立一個從指定元素發出的 keydown / keyup。
- * 事件要真的 dispatch 過，event.target 才會有值——matchShortcut 靠它判斷是不是輸入框。
+ * 建立一個來源為指定元素的 keydown / keyup，交給測試直接呼叫 store。
+ *
+ * 刻意不 dispatch：matchShortcut 只讀 event.target 的 tagName，所以只要把 target
+ * 指定好就夠了。dispatch 的話，事件會經過 document 上任何已註冊的鍵盤監聽器，
+ * 同一個事件可能被處理兩次；不 dispatch 就不必依賴「目前沒有人在聽」這個前提。
+ * 未 dispatch 的事件一樣能 preventDefault，defaultPrevented 照常反映結果。
  */
 function keyEvent(
   type: 'keydown' | 'keyup',
   init: KeyInit,
   target: HTMLElement = document.body,
 ): KeyboardEvent {
-  const event = new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init })
-  target.dispatchEvent(event)
+  const event = new KeyboardEvent(type, { cancelable: true, ...init })
+  Object.defineProperty(event, 'target', { value: target })
   return event
 }
 
@@ -36,6 +40,11 @@ const SPACE: KeyInit = { key: ' ', code: 'Space' }
 describe('tool store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+  })
+
+  // 斷言失敗時測試會在中途結束，寫在測試最後的 mockRestore() 就不會執行。
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   describe('單鍵快捷鍵', () => {
@@ -231,16 +240,14 @@ describe('tool store', () => {
   describe('輸入框', () => {
     it.each(['input', 'textarea'])('焦點在 %s 時單鍵不切換工具', (tag) => {
       const store = useToolStore()
+      // 不必掛進 document：事件不 dispatch，matchShortcut 只看 target 的 tagName。
       const field = document.createElement(tag)
-      document.body.appendChild(field)
 
       const event = keydown({ key: 'r' }, field)
       store.handleKeydown(event)
 
       expect(store.activeTool).toBe(ToolType.Move)
       expect(event.defaultPrevented).toBe(false)
-
-      field.remove()
     })
   })
 
@@ -253,7 +260,6 @@ describe('tool store', () => {
 
       expect(store.activeTool).toBe(ToolType.Move)
       expect(warn).toHaveBeenCalledOnce()
-      warn.mockRestore()
     })
 
     it('記住每個群組最後使用的子工具', () => {
