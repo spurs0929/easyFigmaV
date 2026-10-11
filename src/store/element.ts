@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, toRaw } from 'vue'
 import { defineStore } from 'pinia'
 import { cloneElementStoreSnapshot } from '@/types/document'
 import {
@@ -18,13 +18,16 @@ import {
 export const useElementStore = defineStore('element', () => {
   // ── State ──────────────────────────────────────────────────────────────────
 
-  const _store = ref<ElementStore>({ byId: {}, rootIds: [] })
+  // 初始的空 store 同時是 history 的第一筆，兩邊必須是同一個物件：
+  // _pushSnapshot 以參考是否相同判斷「從上一筆快照到現在有沒有改過」。
+  const _initialStore: ElementStore = { byId: {}, rootIds: [] }
+  const _store = ref<ElementStore>(_initialStore)
   const _selectedIds = ref<ReadonlySet<string>>(new Set())
   // documentStore 監聽此計數器以觸發自動存檔；每次 store 結構改變時遞增。
   const _documentRevision = ref(0)
 
   // History 不需響應式；直接用普通陣列，避免 Pinia 追蹤大量快照
-  let _history: ElementStore[] = [{ byId: {}, rootIds: [] }]
+  let _history: ElementStore[] = [_initialStore]
   let _historyIndex: number = 0
 
   // ── Public Computed ────────────────────────────────────────────────────────
@@ -154,6 +157,70 @@ export const useElementStore = defineStore('element', () => {
       next.delete(id)
       return next
     })()
+
+    _pushSnapshot()
+    assertStoreIntegrity(_store.value)
+    _touchDocument()
+  }
+
+  /**
+   * 一次刪除多個元素（各自遞迴刪除子樹），整批只推一筆 undo 快照。
+   *
+   * 多選刪除不能逐一呼叫 remove()：那樣每個元素各佔一筆 undo，使用者要按 N 次
+   * 才能還原一次操作，而且中間每一步都是「只刪了一部分」的狀態。
+   *
+   * - 不存在或重複的 id 會被忽略；沒有任何有效 id 時完全不動 store，
+   *   不推快照、不清 redo、也不遞增 documentRevision。
+   * - 祖先與子孫同時出現在 ids 時，子孫隨祖先的子樹刪除一次，不會重複處理。
+   * - 被刪除的 id（含所有子孫）一併從 selectedIds 移除。
+   *
+   * 既有的 store 物件（也就是 history 裡的快照）不會被修改：byId 先淺拷貝，
+   * 需要更新 childIds 的父元素一律以新物件取代。
+   */
+  function removeMany(ids: readonly string[]): void {
+    const s = _store.value
+    const requested = new Set(ids.filter((id) => s.byId[id] !== undefined))
+    if (requested.size === 0) return
+
+    const newById = { ...s.byId }
+    const removed = new Set<string>()
+
+    const deleteTree = (elId: string): void => {
+      const elem = newById[elId]
+      if (!elem) return
+      for (const childId of elem.childIds) deleteTree(childId)
+      delete newById[elId]
+      removed.add(elId)
+    }
+    // 祖先與子孫同時在清單內時不需要先過濾：誰先被處理，另一個到時候已經不在
+    // newById 裡，deleteTree 會直接返回，同一個元素不會被刪兩次。
+    for (const id of requested) deleteTree(id)
+
+    // 仍存在的父元素：每個父元素只重建一次 childIds。
+    // 同一個群組被刪掉多個子元素時，逐一處理會重複建立中間物件。
+    const survivingParentIds = new Set<string>()
+    // 父元素自己也被刪掉的（祖先在清單內）不在 newById 裡，自然被跳過。
+    for (const id of requested) {
+      const parentId = s.byId[id].parentId
+      if (parentId !== undefined && newById[parentId]) survivingParentIds.add(parentId)
+    }
+    for (const parentId of survivingParentIds) {
+      const parent = newById[parentId]
+      newById[parentId] = {
+        ...parent,
+        childIds: parent.childIds.filter((cid) => !removed.has(cid)),
+      }
+    }
+
+    const newRootIds = s.rootIds.some((rid) => removed.has(rid))
+      ? s.rootIds.filter((rid) => !removed.has(rid))
+      : s.rootIds
+
+    _store.value = { byId: newById, rootIds: newRootIds }
+
+    if ([..._selectedIds.value].some((id) => removed.has(id))) {
+      _selectedIds.value = new Set([..._selectedIds.value].filter((id) => !removed.has(id)))
+    }
 
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
@@ -367,7 +434,8 @@ export const useElementStore = defineStore('element', () => {
     if (!el) return
 
     const isRoot = !el.parentId
-    const list = isRoot ? [...s.rootIds] : [...(s.byId[el.parentId!]?.childIds ?? [])]
+    const original = isRoot ? s.rootIds : (s.byId[el.parentId!]?.childIds ?? [])
+    const list = [...original]
     const idx = list.indexOf(id)
     if (idx === -1) return
 
@@ -387,6 +455,11 @@ export const useElementStore = defineStore('element', () => {
         break
     }
 
+    // 順序沒有實際改變（已在最上層再往上、只有一個元素……）就不建立新的 store 物件。
+    // 否則內容相同、參考卻不同，_pushSnapshot 的參考去重擋不到，呼叫端會多推一筆
+    // 空的 undo、清掉 redo，還會白白觸發一次自動存檔。
+    if (list.every((listId, i) => listId === original[i])) return
+
     if (isRoot) {
       _store.value = { ...s, rootIds: list }
     } else {
@@ -403,6 +476,15 @@ export const useElementStore = defineStore('element', () => {
 
   function _pushSnapshot(): void {
     const current = _store.value
+    // store 物件是不可變的：每次變更都會換成新物件。與 history 目前位置是同一個
+    // 參考，代表從上一筆快照到現在什麼都沒改，再推只會多一筆空的 undo 並截斷 redo。
+    //
+    // 這只是防禦，不是「無變更」的完整判斷：內容相同但參考不同的情況這裡擋不到，
+    // 仍要由各個操作自己在沒有變更時提前返回（見 _reorder、removeMany）。
+    //
+    // 比對前先 toRaw：_store 是深層 ref，讀出來的是 reactive proxy，而 history 裡
+    // 存的可能是 proxy（由這裡推入）也可能是原始物件（loadSnapshot、初始狀態）。
+    if (toRaw(_history[_historyIndex]) === toRaw(current)) return
     _history = _history.slice(0, _historyIndex + 1)
     _history.push(current)
     if (_history.length > ELEMENT_HISTORY_MAX) {
@@ -493,6 +575,7 @@ export const useElementStore = defineStore('element', () => {
     update,
     commitUpdate,
     remove,
+    removeMany,
     setAll,
     addAll,
     // Group
