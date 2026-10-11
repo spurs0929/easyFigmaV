@@ -43,25 +43,45 @@ function allIds(store: Store): string[] {
 }
 
 /**
- * 一直 undo 到內容不再改變為止，回傳「內容真的有變」的次數與「按了卻沒變」的次數。
+ * 一直 undo（或 redo）到 history 走到底，回傳實際走了幾步，以及其中內容有沒有變。
  *
- * 只數到最後一次有變化為止：history 走到底之後 undo 本來就不會動，那不算空的 undo。
- * 空的 undo 指的是夾在中間、使用者按了卻什麼都沒發生的那幾筆。
+ * 「有沒有走一步」看的是 documentRevision，不是內容：undo / redo 只有在 history
+ * 位置真的移動時才遞增它，走到底之後就不再動。這樣每一筆 history 都數得到，
+ * 包含內容與相鄰那一筆完全相同的空快照——不論它夾在中間，還是壓在最舊的那一端。
+ *
+ * 只比較內容是數不到最舊端的：退到一筆空快照與「已經到底、按了沒反應」，
+ * 兩者的內容都沒有變，無從分辨。
+ *
+ * - effective：走了一步，內容也變了。
+ * - empty：走了一步，內容卻沒變——使用者按了卻什麼都沒發生的那幾筆。
  */
-function drainUndo(store: Store): { effective: number; empty: number } {
-  const results: boolean[] = []
-  // 上限取 history 容量的兩倍，足以走完任何合法的 history。
+function drain(store: Store, step: () => void): { effective: number; empty: number } {
+  let effective = 0
+  let empty = 0
+  // 上限取 history 容量的兩倍：足以走完任何合法的 history，也避免壞掉時變成無窮迴圈。
   for (let i = 0; i < ELEMENT_HISTORY_MAX * 2; i++) {
+    const revision = store.documentRevision
     const before = content(store)
-    store.undo()
-    results.push(content(store) !== before)
+    step()
+    if (store.documentRevision === revision) return { effective, empty }
+    if (content(store) === before) empty++
+    else effective++
   }
-  const last = results.lastIndexOf(true)
-  const used = results.slice(0, last + 1)
-  return {
-    effective: used.filter(Boolean).length,
-    empty: used.filter((changed) => !changed).length,
-  }
+  throw new Error('history 沒有在預期的步數內走到底')
+}
+
+function drainUndo(store: Store): { effective: number; empty: number } {
+  return drain(store, () => store.undo())
+}
+
+function drainRedo(store: Store): { effective: number; empty: number } {
+  return drain(store, () => store.redo())
+}
+
+/** 目前位置之前還有幾筆可以 undo。走完會停在最舊的那一筆，只用在測試的最後一步。 */
+function undoDepth(store: Store): number {
+  const { effective, empty } = drainUndo(store)
+  return effective + empty
 }
 
 /** a、b、c、d 四個根元素，依序建立三層巢狀群組：outer > middle > inner > (a, b)。 */
@@ -511,10 +531,184 @@ describe('elementStore history', () => {
     })
   })
 
+  describe('Undo / Redo 序列', () => {
+    it('初始空文件重複 pushSnapshot：沒有任何可 Undo 的步驟', () => {
+      const revision = store.documentRevision
+
+      store.pushSnapshot()
+      store.pushSnapshot()
+      store.pushSnapshot()
+
+      expect(undoDepth(store)).toBe(0)
+      expect(drainRedo(store)).toEqual({ effective: 0, empty: 0 })
+      expect(store.documentRevision).toBe(revision)
+    })
+
+    it('初始空文件重複 pushSnapshot 之後新增元素：剛好一筆，Undo / Redo 各一步', () => {
+      store.pushSnapshot()
+      store.pushSnapshot()
+      store.add(rect('a'))
+      store.pushSnapshot()
+
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+      expect(allIds(store)).toEqual([])
+      expect(drainRedo(store)).toEqual({ effective: 1, empty: 0 })
+      expect(allIds(store)).toEqual(['a'])
+    })
+
+    it('loadSnapshot 後重複 pushSnapshot：沒有任何可 Undo 的步驟', () => {
+      store.add(rect('old'))
+      store.loadSnapshot({ byId: { a: rect('a') }, rootIds: ['a'] })
+      const revision = store.documentRevision
+
+      store.pushSnapshot()
+      store.pushSnapshot()
+
+      expect(undoDepth(store)).toBe(0)
+      expect(drainRedo(store)).toEqual({ effective: 0, empty: 0 })
+      expect(store.documentRevision).toBe(revision)
+      // loadSnapshot 會重設 history：載入前的內容不可能被 undo 回來。
+      expect(allIds(store)).toEqual(['a'])
+    })
+
+    it('loadSnapshot 後重複 pushSnapshot 再變更：剛好一筆，退回載入時的內容', () => {
+      store.loadSnapshot({ byId: { a: rect('a') }, rootIds: ['a'] })
+      const loaded = content(store)
+
+      store.pushSnapshot()
+      store.commitUpdate('a', { x: 50 })
+      store.pushSnapshot()
+
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+      expect(content(store)).toBe(loaded)
+      expect(drainRedo(store)).toEqual({ effective: 1, empty: 0 })
+      expect(store.get('a')?.x).toBe(50)
+    })
+
+    it('Undo 多步之後連續執行各種 no-op，Redo 仍可完整走回最新狀態', () => {
+      store.addAll([rect('a'), rect('b'), rect('c')])
+      store.commitUpdate('a', { x: 10 })
+      store.commitUpdate('a', { x: 20 })
+      store.commitUpdate('a', { x: 30 })
+      const latest = content(store)
+
+      store.undo()
+      store.undo()
+      expect(store.get('a')?.x).toBe(10)
+      const revision = store.documentRevision
+
+      store.pushSnapshot()
+      store.bringToFront('c')
+      store.sendToBack('a')
+      store.moveUp('c')
+      store.moveDown('a')
+      store.bringToFront('missing')
+      store.pushSnapshot()
+      store.removeMany([])
+      store.removeMany(['missing', 'missing'])
+      store.pushSnapshot()
+
+      expect(store.documentRevision).toBe(revision)
+      expect(drainRedo(store)).toEqual({ effective: 2, empty: 0 })
+      expect(content(store)).toBe(latest)
+    })
+
+    it('刪除群組內部分子元素後連續 Undo / Redo 多次，結構與順序保持一致', () => {
+      store.addAll([rect('a'), rect('b'), rect('c'), rect('d'), rect('e'), rect('f')])
+      const groupId = store.group(['b', 'c', 'd', 'e'])
+      const before = content(store)
+
+      store.removeMany(['e', 'c'])
+      const after = content(store)
+
+      expect(store.get(groupId)?.childIds).toEqual(['b', 'd'])
+      expect(rootOrder(store)).toEqual(['a', groupId, 'f'])
+
+      for (let round = 0; round < 5; round++) {
+        store.undo()
+        expect(content(store)).toBe(before)
+        expect(store.get(groupId)?.childIds).toEqual(['b', 'c', 'd', 'e'])
+        expect(store.get('c')?.parentId).toBe(groupId)
+        expect(store.get('e')?.parentId).toBe(groupId)
+        expect(rootOrder(store)).toEqual(['a', groupId, 'f'])
+
+        store.redo()
+        expect(content(store)).toBe(after)
+        expect(store.get(groupId)?.childIds).toEqual(['b', 'd'])
+        expect(store.get('c')).toBeUndefined()
+        expect(store.get('e')).toBeUndefined()
+        expect(rootOrder(store)).toEqual(['a', groupId, 'f'])
+      }
+
+      // 來回五次之後 history 沒有多出任何一筆：addAll、group、removeMany 共三步。
+      expect(drainUndo(store)).toEqual({ effective: 3, empty: 0 })
+      expect(allIds(store)).toEqual([])
+    })
+
+    it('Undo 後執行混合有效與無效 id 的 removeMany：Redo 正確失效', () => {
+      store.addAll([rect('a'), rect('b'), rect('c')])
+      store.commitUpdate('a', { x: 50 })
+      store.commitUpdate('a', { x: 80 })
+      store.undo()
+      store.undo()
+      expect(store.get('a')?.x).toBe(0)
+
+      store.removeMany(['missing', 'b', 'b', 'also-missing'])
+      const afterRemove = content(store)
+      const revision = store.documentRevision
+
+      // 原本可以 redo 回 x = 50、x = 80 的兩筆已經被新的操作截斷。
+      store.redo()
+      store.redo()
+      expect(store.documentRevision).toBe(revision)
+      expect(content(store)).toBe(afterRemove)
+      expect(store.get('a')?.x).toBe(0)
+      expect(allIds(store)).toEqual(['a', 'c'])
+
+      // 新的那一筆本身可以正常 Undo / Redo。
+      store.undo()
+      expect(allIds(store)).toEqual(['a', 'b', 'c'])
+      expect(rootOrder(store)).toEqual(['a', 'b', 'c'])
+      expect(store.get('a')?.x).toBe(0)
+      store.redo()
+      expect(content(store)).toBe(afterRemove)
+
+      // history 現在是：空 → addAll → removeMany，不多不少。
+      expect(drainUndo(store)).toEqual({ effective: 2, empty: 0 })
+    })
+  })
+
   describe('history 上限', () => {
-    it(`最多保留 ${ELEMENT_HISTORY_MAX} 筆快照，可 Undo ${ELEMENT_HISTORY_MAX - 1} 步`, () => {
+    /** 連續新增 n 個元素；每個 add 各佔一筆 history。 */
+    function addMany(n: number): void {
+      for (let i = 0; i < n; i++) store.add(rect(`r${i}`))
+    }
+
+    it(`少於上限一筆（${ELEMENT_HISTORY_MAX - 1} 筆）：全部可以 Undo`, () => {
+      addMany(ELEMENT_HISTORY_MAX - 2)
+
+      expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 2, empty: 0 })
+      expect(allIds(store)).toEqual([])
+    })
+
+    it(`剛好 ${ELEMENT_HISTORY_MAX} 筆：不捨棄任何快照，可以一路退回空文件`, () => {
+      // 初始的空狀態佔一筆，所以 (上限 - 1) 次新增剛好填滿。
+      addMany(ELEMENT_HISTORY_MAX - 1)
+
+      expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 1, empty: 0 })
+      expect(allIds(store)).toEqual([])
+    })
+
+    it('超過上限一筆：只捨棄最舊的空狀態，退到底時剩下第一個元素', () => {
+      addMany(ELEMENT_HISTORY_MAX)
+
+      expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 1, empty: 0 })
+      expect(allIds(store)).toEqual(['r0'])
+    })
+
+    it(`遠超過上限：最多保留 ${ELEMENT_HISTORY_MAX} 筆，可 Undo ${ELEMENT_HISTORY_MAX - 1} 步`, () => {
       const total = ELEMENT_HISTORY_MAX + 30
-      for (let i = 0; i < total; i++) store.add(rect(`r${i}`))
+      addMany(total)
 
       expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 1, empty: 0 })
       // 最舊的快照已被捨棄，退到底時留下的是第 (total - 上限 + 1) 個狀態。
@@ -522,24 +716,55 @@ describe('elementStore history', () => {
     })
 
     it('達到上限後 no-op 不會擠掉既有的快照', () => {
-      for (let i = 0; i < ELEMENT_HISTORY_MAX + 5; i++) store.add(rect(`r${i}`))
+      addMany(ELEMENT_HISTORY_MAX + 5)
+      const top = `r${ELEMENT_HISTORY_MAX + 4}`
 
       for (let i = 0; i < 20; i++) {
         store.pushSnapshot()
-        store.bringToFront(`r${ELEMENT_HISTORY_MAX + 4}`)
+        store.bringToFront(top)
         store.removeMany(['missing'])
       }
 
       expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 1, empty: 0 })
+      // 最舊的那一筆還在：沒有被 no-op 擠掉。
+      expect(allIds(store)).toHaveLength(6)
+    })
+
+    it('達到上限後 Undo 再執行 no-op：Redo 不被截斷', () => {
+      addMany(ELEMENT_HISTORY_MAX + 5)
+      const latest = content(store)
+
+      store.undo()
+      store.undo()
+      store.undo()
+      store.pushSnapshot()
+      store.removeMany(['missing'])
+
+      expect(drainRedo(store)).toEqual({ effective: 3, empty: 0 })
+      expect(content(store)).toBe(latest)
+    })
+
+    it('達到上限後 Undo 再執行實際變更：Redo 失效，總筆數仍不超過上限', () => {
+      addMany(ELEMENT_HISTORY_MAX + 5)
+
+      store.undo()
+      store.undo()
+      store.undo()
+      store.removeMany(['r10', 'r11'])
+      const afterRemove = content(store)
+
+      expect(drainRedo(store)).toEqual({ effective: 0, empty: 0 })
+      expect(content(store)).toBe(afterRemove)
+      // 上限 50 筆，退了 3 筆又推 1 筆：48 筆，可 Undo 47 步。
+      expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 3, empty: 0 })
     })
 
     it('退到底之後 Redo 可以完整走回最新狀態', () => {
-      for (let i = 0; i < ELEMENT_HISTORY_MAX + 5; i++) store.add(rect(`r${i}`))
+      addMany(ELEMENT_HISTORY_MAX + 5)
       const latest = content(store)
 
-      drainUndo(store)
-      for (let i = 0; i < ELEMENT_HISTORY_MAX * 2; i++) store.redo()
-
+      expect(drainUndo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 1, empty: 0 })
+      expect(drainRedo(store)).toEqual({ effective: ELEMENT_HISTORY_MAX - 1, empty: 0 })
       expect(content(store)).toBe(latest)
     })
   })
