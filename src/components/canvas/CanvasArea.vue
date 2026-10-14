@@ -136,6 +136,8 @@ let _suppressNextStageClick = false
 let _pressButton: number | null = null
 /** 落在 Stage 上的 mouseup，等事件派發完再確認 Stage 有沒有真的處理（見 onWindowMouseUp）。 */
 let _stageMouseUpCheck: ReturnType<typeof setTimeout> | null = null
+/** MouseEvent.button → MouseEvent.buttons 的對應位元（左 / 中鍵）。 */
+const BUTTONS_MASK: Record<number, number> = { 0: 1, 1: 4 }
 
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
@@ -880,7 +882,10 @@ function registerStageEvents(): void {
 
   stage.on('mousedown', (e: Konva.KonvaEventObject<MouseEvent>) => onMouseDown(e))
   stage.on('mousemove', () => onMouseMove())
-  stage.on('mouseup', () => onMouseUp(true))
+  // 只有放開的是開始這次按壓的那顆鍵，才結束手勢。
+  stage.on('mouseup', (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button === _pressButton) onMouseUp(true)
+  })
 
   // 點擊 stage 空白區域 → 清除選取（marquee 結束後跳過，避免覆蓋框選結果）
   stage.on('click', (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -975,6 +980,13 @@ function endPressWithoutStageMouseUp(): void {
 function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
   flushStageMouseUpCheck()
   if (e.evt.button !== 0 && e.evt.button !== 1) return
+  if (_pressButton !== null) {
+    // 另一顆鍵還按著（例如左鍵拖曳中按下中鍵）：不開始新手勢，免得蓋掉進行中的那個。
+    if (e.evt.button !== _pressButton && e.evt.buttons & BUTTONS_MASK[_pressButton]) return
+    // 同一顆鍵又按下，或那顆鍵其實已經放開：上一次的 mouseup 沒送到（例如拖曳中切換
+    // 視窗）。先替它收尾，不讓殘留的 _pressButton 擋住之後所有的點擊。
+    endPressWithoutStageMouseUp()
+  }
   _pressButton = e.evt.button
   const tool = toolStore.activeTool
   const world = pointerWorld()

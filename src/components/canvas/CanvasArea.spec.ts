@@ -167,7 +167,8 @@ const press = (x: number, y: number, init?: MouseEventInit) =>
 const move = (x: number, y: number, init?: MouseEventInit) =>
   mouse(content(), 'mousemove', x, y, init)
 /** 在畫布上放開：Konva 會依序送出 mouseup 與（同一個 shape 上按下時的）click。 */
-const releaseOnStage = (x: number, y: number) => mouse(content(), 'mouseup', x, y)
+const releaseOnStage = (x: number, y: number, init?: MouseEventInit) =>
+  mouse(content(), 'mouseup', x, y, init)
 /** 拖出畫布：Stage 收到 mouseleave，之後就收不到 mousemove / mouseup。 */
 const leave = (x: number, y: number) => mouse(content(), 'mouseleave', x, y)
 /** 在畫布外放開：mouseup 只會送到滑鼠底下的元素（這裡是 body），Stage 收不到。 */
@@ -624,6 +625,206 @@ describe('CanvasArea：其他按鍵的 mouseup', () => {
     hover(100, 100)
     expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
     expect(undoDepth(store)).toBe(0)
+  })
+})
+
+// ── 畫布上的按鍵交錯 ─────────────────────────────────────────────────────────
+
+describe('CanvasArea：畫布上的按鍵交錯', () => {
+  /** 原本的鍵（held）還按著時，在畫布上按下又放開另一顆鍵。 */
+  function otherClickOnStage(x: number, y: number, button: number, mask: number, held = 1) {
+    press(x, y, { button, buttons: held | mask })
+    releaseOnStage(x, y, { button, buttons: held })
+  }
+
+  it.each([
+    ['中鍵', 1, 4],
+    ['右鍵', 2, 2],
+  ])('左鍵拖曳中在畫布上按放%s：拖曳繼續、只建立一筆 Undo', async (_label, button, mask) => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(150, 150)
+    move(200, 150)
+    otherClickOnStage(200, 150, button, mask)
+    // 不被平移蓋掉，也不因為另一顆鍵放開而結束。
+    expect(undoDepth(store)).toBe(0)
+
+    move(250, 150, { buttons: 1 })
+    expect(box(store, 'a')).toMatchObject({ x: 200, y: 100 })
+    expect(viewport.viewport).toMatchObject({ x: 0, y: 0 })
+
+    releaseOnStage(250, 150)
+    await macrotask()
+    expect(undoDepth(store)).toBe(1)
+    pressUndo()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    pressRedo()
+    expect(box(store, 'a')).toMatchObject({ x: 200, y: 100 })
+  })
+
+  it('縮放中在畫布上按放中鍵：縮放繼續、只建立一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(200, 200)
+    move(230, 230)
+    otherClickOnStage(230, 230, 1, 4)
+    move(260, 250, { buttons: 1 })
+    releaseOnStage(260, 250)
+    await macrotask()
+
+    expect(box(store, 'a')).toEqual({ x: 100, y: 100, width: 160, height: 150 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('繪製中在畫布上按放中鍵：只建立一個元素、一筆 Undo', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Rect)
+    await nextTick()
+
+    press(600, 400)
+    move(650, 450)
+    otherClickOnStage(650, 450, 1, 4)
+    move(700, 500, { buttons: 1 })
+    releaseOnStage(700, 500)
+    await macrotask()
+
+    const created = Object.values(store.byId)
+    expect(created).toHaveLength(1)
+    expect(created[0]).toMatchObject({ x: 600, y: 400, width: 100, height: 100 })
+    expect(useViewportStore().viewport).toMatchObject({ x: 0, y: 0 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('Pencil 中在畫布上按放中鍵：只建立一條筆畫、一筆 Undo', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pencil)
+    await nextTick()
+
+    press(100, 100)
+    move(200, 100)
+    otherClickOnStage(200, 100, 1, 4)
+    move(300, 150, { buttons: 1 })
+    releaseOnStage(300, 150)
+    await macrotask()
+
+    expect(vectors(store)).toHaveLength(1)
+    expect(vectors(store)[0]).toMatchObject({ x: 100, y: 100, width: 200, height: 50 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('框選中在畫布上按放中鍵：框選結果正確、不產生 History', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 600, y: 100 })])
+
+    press(50, 50)
+    move(150, 150)
+    otherClickOnStage(150, 150, 1, 4)
+    move(300, 300, { buttons: 1 })
+    releaseOnStage(300, 300)
+    await macrotask()
+
+    expect([...store.selectedIds]).toEqual(['a'])
+    expect(useViewportStore().viewport).toMatchObject({ x: 0, y: 0 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('中鍵平移中在畫布上按放左鍵：平移繼續，不開始拖曳', async () => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(400, 300, { button: 1, buttons: 4 })
+    move(450, 300, { buttons: 4 })
+    // 平移 50 之後，元素在螢幕上的 x 範圍是 150–250：在元素上按放左鍵。
+    otherClickOnStage(200, 150, 0, 1, 4)
+    move(500, 300, { buttons: 4 })
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
+
+    releaseOnStage(500, 300, { button: 1, buttons: 0 })
+    await macrotask()
+    hover(100, 100)
+
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('mouseup 遺失後再按同一顆鍵：先替上一次收尾，畫布不會卡住', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(170, 180)
+    // 放開的 mouseup 沒送到任何地方（例如拖曳中切換視窗）。
+    await nextTick()
+
+    press(200, 200)
+    expect(undoDepth(store)).toBe(1)
+    move(200, 300)
+    releaseOnStage(200, 300)
+    await macrotask()
+
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 230 })
+    expect(undoDepth(store)).toBe(2)
+  })
+
+  it('mouseup 遺失後按其他鍵：原本的鍵已放開，先替上一次收尾再開始新手勢', async () => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(150, 150)
+    move(170, 180)
+    // buttons 只剩中鍵：左鍵其實已經放開，只是 mouseup 沒送到。
+    press(400, 300, { button: 1, buttons: 4 })
+    expect(undoDepth(store)).toBe(1)
+
+    move(450, 300, { buttons: 4 })
+    releaseOnStage(450, 300, { button: 1, buttons: 0 })
+    await macrotask()
+
+    expect(viewport.viewport).toMatchObject({ x: 50, y: 0 })
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('被攔下的 mouseup 留下的延後確認，不會結束下一次還按著的按壓', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    const unblock = blockMouseUpBeforeStage()
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    unblock()
+    await nextTick()
+
+    // 馬上再按住同一個元素，按著的期間讓延後確認的時間點過去。
+    press(200, 200)
+    await macrotask()
+    move(200, 300)
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 230 })
+
+    releaseOnStage(200, 300)
+    await macrotask()
+    expect(undoDepth(store)).toBe(2)
+  })
+
+  it('被攔下的 mouseup 還沒補收尾就按下中鍵：先結束左鍵，再開始平移', async () => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    const unblock = blockMouseUpBeforeStage()
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    unblock()
+
+    press(400, 300, { button: 1, buttons: 4 })
+    move(450, 300, { buttons: 4 })
+    releaseOnStage(450, 300, { button: 1, buttons: 0 })
+    await macrotask()
+
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(viewport.viewport).toMatchObject({ x: 50, y: 0 })
+    expect(undoDepth(store)).toBe(1)
   })
 })
 
