@@ -125,6 +125,14 @@ let _zOrderSnapshot: string[] = []
 let _gesture: GestureState = { kind: 'idle' }
 // marquee 完成後抑制 stage click → clearSelection（Konva 不知道我們在手動拖曳）
 let _suppressNextStageClick = false
+/**
+ * 目前這次按壓是不是從 Stage 開始的、而且還沒放開。
+ *
+ * Konva 的滑鼠事件只綁在 Stage 自己的 DOM 上：拖出畫布後在外面放開，Stage 收不到
+ * mouseup，手勢會一直停在進行中。所以另外在 window 聽 mouseup，用這個旗標判斷
+ * 那個 mouseup 是不是在結束一次從畫布開始、Stage 卻沒收到放開的按壓。
+ */
+let _pressOnStage = false
 
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
@@ -869,7 +877,7 @@ function registerStageEvents(): void {
 
   stage.on('mousedown', (e: Konva.KonvaEventObject<MouseEvent>) => onMouseDown(e))
   stage.on('mousemove', () => onMouseMove())
-  stage.on('mouseup', () => onMouseUp())
+  stage.on('mouseup', () => onMouseUp(true))
 
   // 點擊 stage 空白區域 → 清除選取（marquee 結束後跳過，避免覆蓋框選結果）
   stage.on('click', (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -920,10 +928,33 @@ function onContainerWheel(e: WheelEvent): void {
   e.preventDefault()
 }
 
+/**
+ * 在畫布外放開滑鼠：從 Stage 開始的按壓，Stage 卻沒收到它的 mouseup。
+ *
+ * 以 capture 階段註冊在 window：畫布外的元素（面板、Teleport 到 body 的留言圖釘等）
+ * 就算 stopPropagation，這裡也收得到。
+ *
+ * 落在 Stage 上的 mouseup 交給 Stage 自己處理，這裡直接略過，同一次放開只會結束一次。
+ */
+function onWindowMouseUp(e: MouseEvent): void {
+  if (!_pressOnStage) return
+  if (e.target instanceof Node && stage?.content.contains(e.target)) return
+  _pressOnStage = false
+
+  // 沒有進行中的手勢（點文字、放留言等）就跟以前一樣不處理。
+  if (_gesture.kind === 'idle') return
+
+  onMouseUp(false)
+  // 這次按壓不會有 stage click 了（Konva 只在 Stage 收到 mouseup 時才合成 click）。
+  // 按下時為它設的抑制要撤回，否則會吃掉之後某一次真正的點擊。
+  _suppressNextStageClick = false
+}
+
 // ── Gesture Handlers ───────────────────────────────────────────────────────────
 
 function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
   if (e.evt.button !== 0 && e.evt.button !== 1) return
+  _pressOnStage = true
   const tool = toolStore.activeTool
   const world = pointerWorld()
   const targetAttrs = e.target.getAttrs() as Record<string, unknown>
@@ -1065,7 +1096,7 @@ function startDrawing(tool: ToolType, world: Point): void {
   if (!renderer) return
   const ghost = renderer.buildGhost(world, 1 / viewportStore.viewport.scale)
   uiLayer.add(ghost)
-  _gesture = { kind: 'drawing', start: world, ghost }
+  _gesture = { kind: 'drawing', start: world, current: world, ghost }
 }
 
 function onMouseMove(): void {
@@ -1114,7 +1145,8 @@ function onMouseMove(): void {
   }
 
   if (g.kind === 'drawing') {
-    RENDERER_BY_TOOL.get(toolStore.activeTool)?.updateGhost(g.ghost, g.start, pointerWorld())
+    g.current = pointerWorld()
+    RENDERER_BY_TOOL.get(toolStore.activeTool)?.updateGhost(g.ghost, g.start, g.current)
     uiLayer.batchDraw()
     return
   }
@@ -1176,8 +1208,17 @@ function onMouseMove(): void {
   }
 }
 
-function onMouseUp(): void {
+/**
+ * 結束這次按壓的手勢。
+ *
+ * releasedOnStage = false 表示滑鼠是在畫布外放開的（見 onWindowMouseUp）。這時不讀
+ * stage.getPointerPosition()：Stage 最後記下的是滑鼠離開畫布那一刻的位置，不是放開的
+ * 位置。各手勢改用畫面上最後呈現的狀態收尾——拖曳、縮放、框選本來就是，繪製用預覽
+ * 最後更新到的點，Pencil 不補最後一點。
+ */
+function onMouseUp(releasedOnStage: boolean): void {
   const g = _gesture
+  _pressOnStage = false
   stage.container().style.cursor = toolStore.cursor
 
   if (g.kind === 'panning') {
@@ -1209,7 +1250,7 @@ function onMouseUp(): void {
   }
 
   if (g.kind === 'drawing') {
-    const newEl = commitDraw(g)
+    const newEl = commitDraw(g, releasedOnStage ? pointerWorld() : g.current)
     if (newEl) elementStore.add(newEl)
     g.ghost.destroy()
     uiLayer.batchDraw()
@@ -1225,16 +1266,20 @@ function onMouseUp(): void {
   }
 
   if (g.kind === 'pencil') {
-    const world = pointerWorld()
-    g.hoverPoint = world
-    appendPencilPoint(g, world, PENCIL_MIN_COMMIT_DISTANCE_SCREEN_PX)
+    if (releasedOnStage) {
+      const world = pointerWorld()
+      g.hoverPoint = world
+      appendPencilPoint(g, world, PENCIL_MIN_COMMIT_DISTANCE_SCREEN_PX)
+    }
     finishPencilGesture()
     return
   }
 
+  // Pen 是多步驟手勢：放開只結束這一次按壓（停止拉把手），草稿要到 Enter / Esc /
+  // 點回起點才結束，在畫布外放開也一樣。
   if (g.kind === 'pen') {
     g.pointerDown = false
-    g.hoverPoint = pointerWorld()
+    if (releasedOnStage) g.hoverPoint = pointerWorld()
     const point = g.points[g.activeIndex]
     // 如果拖曳距離太短，移除殘留把手，避免單擊節點被誤判成曲線點。
     if (point.handleIn && !point.handleOut) point.handleIn = undefined
@@ -1268,11 +1313,14 @@ function commitMarquee(g: Extract<GestureState, { kind: 'marquee' }>): void {
   _gesture = { kind: 'idle' }
 }
 
-function commitDraw(g: Extract<GestureState, { kind: 'drawing' }>): CanvasElement | null {
+function commitDraw(
+  g: Extract<GestureState, { kind: 'drawing' }>,
+  end: Point,
+): CanvasElement | null {
   const tool = toolStore.activeTool
   const renderer = RENDERER_BY_TOOL.get(tool)
   if (!renderer) return null
-  const data = renderer.createElement(tool, g.start, pointerWorld())
+  const data = renderer.createElement(tool, g.start, end)
   if (!data) return null
   return { id: newElementId(), name: defaultElementName(data.kind), ...data }
 }
@@ -1351,6 +1399,7 @@ onMounted(() => {
   document.addEventListener('mousemove', reportCursor)
   // 滑鼠移出視窗時不會再有 mousemove，要另外聽。
   document.documentElement.addEventListener('mouseleave', reportCursorLeft)
+  window.addEventListener('mouseup', onWindowMouseUp, true)
   window.addEventListener('resize', syncCommentOverlayRect)
   window.addEventListener('scroll', syncCommentOverlayRect, true)
   containerRef.value?.addEventListener('wheel', onContainerWheel, { passive: false })
@@ -1369,6 +1418,7 @@ onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
   document.removeEventListener('mousemove', reportCursor)
   document.documentElement.removeEventListener('mouseleave', reportCursorLeft)
+  window.removeEventListener('mouseup', onWindowMouseUp, true)
   window.removeEventListener('resize', syncCommentOverlayRect)
   window.removeEventListener('scroll', syncCommentOverlayRect, true)
   containerRef.value?.removeEventListener('wheel', onContainerWheel)

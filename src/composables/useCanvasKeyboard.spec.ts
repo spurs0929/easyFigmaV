@@ -87,7 +87,12 @@ const ACTIVE_GESTURES: Record<Exclude<GestureState['kind'], 'idle'>, () => Gestu
     origin: { x: 0, y: 0, width: 10, height: 10 },
   }),
   marquee: () => ({ kind: 'marquee', start: { x: 0, y: 0 }, rect: konvaRect }),
-  drawing: () => ({ kind: 'drawing', start: { x: 0, y: 0 }, ghost: konvaShape }),
+  drawing: () => ({
+    kind: 'drawing',
+    start: { x: 0, y: 0 },
+    current: { x: 0, y: 0 },
+    ghost: konvaShape,
+  }),
   pen: () => penGesture(2),
   pencil: () => ({
     kind: 'pencil',
