@@ -171,9 +171,19 @@ const releaseOnStage = (x: number, y: number) => mouse(content(), 'mouseup', x, 
 /** 拖出畫布：Stage 收到 mouseleave，之後就收不到 mousemove / mouseup。 */
 const leave = (x: number, y: number) => mouse(content(), 'mouseleave', x, y)
 /** 在畫布外放開：mouseup 只會送到滑鼠底下的元素（這裡是 body），Stage 收不到。 */
-const releaseOutside = (x: number, y: number) => mouse(document.body, 'mouseup', x, y)
+const releaseOutside = (x: number, y: number, init?: MouseEventInit) =>
+  mouse(document.body, 'mouseup', x, y, init)
 /** 放開滑鼠鍵之後回到畫布上移動。 */
 const hover = (x: number, y: number) => move(x, y, { buttons: 0 })
+/** 等這次事件派發（含 window 層延後的確認）全部跑完。 */
+const macrotask = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+/** 模擬其他 listener 在 capture 階段攔下 mouseup，Konva 綁在 Stage 上的 listener 收不到。 */
+function blockMouseUpBeforeStage(): () => void {
+  const block = (e: MouseEvent) => e.stopPropagation()
+  document.addEventListener('mouseup', block, true)
+  return () => document.removeEventListener('mouseup', block, true)
+}
 
 function key(k: string, init: KeyboardEventInit = {}) {
   document.dispatchEvent(
@@ -312,6 +322,8 @@ describe('CanvasArea：拖曳的 mouseup', () => {
     releaseOnStage(170, 180)
     // 之後多出來的 mouseup（例如另一顆按鍵）也不能再 commit。
     releaseOutside(1000, 150)
+    // window 層對落在 Stage 上的 mouseup 會延後確認一次；確認跑完也不能再 commit。
+    await macrotask()
 
     expect(push).toHaveBeenCalledTimes(1)
     expect(undoDepth(store)).toBe(1)
@@ -547,6 +559,114 @@ describe('CanvasArea：mouseup 之後的 stage click', () => {
   })
 })
 
+// ── 按鍵交錯 ─────────────────────────────────────────────────────────────────
+
+describe('CanvasArea：其他按鍵的 mouseup', () => {
+  /** 左鍵拖曳到 x=400 後，回到畫布繼續拖到 x=500，最後在畫布外放開左鍵。 */
+  async function finishDragAndExpectOneUndo(store: Store) {
+    // 左鍵還按著：回到畫布繼續拖曳。
+    move(500, 150, { buttons: 1 })
+    expect(box(store, 'a')).toMatchObject({ x: 450, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+
+    // 左鍵在畫布外放開才結束，而且只有一筆 Undo。
+    leave(805, 150)
+    releaseOutside(1000, 150)
+    await macrotask()
+    hover(300, 300)
+    expect(box(store, 'a')).toMatchObject({ x: 450, y: 100 })
+    expect(undoDepth(store)).toBe(1)
+  }
+
+  it('左鍵拖曳中在畫布上按右鍵、到畫布外放開右鍵：不結束拖曳', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(400, 150)
+    press(400, 150, { button: 2, buttons: 3 })
+    leave(805, 150)
+    releaseOutside(1000, 150, { button: 2, buttons: 1 })
+    // 右鍵放開不是左鍵放開：拖曳還沒結束，所以還沒有 History。
+    expect(undoDepth(store)).toBe(0)
+
+    await finishDragAndExpectOneUndo(store)
+  })
+
+  it.each([
+    ['右鍵', 2, 2],
+    ['中鍵', 1, 4],
+  ])('左鍵拖曳到畫布外後按放%s：不結束拖曳', async (_label, button, mask) => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(400, 150)
+    leave(805, 150)
+    mouse(document.body, 'mousedown', 1000, 150, { button, buttons: 1 | mask })
+    releaseOutside(1000, 150, { button, buttons: 1 })
+    // 其他按鍵放開不是左鍵放開：拖曳還沒結束，所以還沒有 History。
+    expect(undoDepth(store)).toBe(0)
+
+    await finishDragAndExpectOneUndo(store)
+  })
+
+  it('中鍵平移在畫布外放開左鍵：不結束平移', async () => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(400, 300, { button: 1, buttons: 4 })
+    move(450, 300, { buttons: 4 })
+    leave(805, 300)
+    releaseOutside(1000, 300, { button: 0, buttons: 4 })
+    move(500, 300, { buttons: 4 })
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
+
+    releaseOutside(1000, 300, { button: 1, buttons: 0 })
+    hover(100, 100)
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
+    expect(undoDepth(store)).toBe(0)
+  })
+})
+
+// ── Stage 沒收到落在畫布上的 mouseup ─────────────────────────────────────────
+
+describe('CanvasArea：落在畫布上的 mouseup 被攔下', () => {
+  it('事件派發結束後補收尾：手勢回到 idle、只建立一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+    const unblock = blockMouseUpBeforeStage()
+
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    unblock()
+    await macrotask()
+
+    hover(400, 400)
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(undoDepth(store)).toBe(1)
+    pressUndo()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+  })
+
+  it('補收尾之前就再次按下：先結束上一次，兩次操作各一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    const unblock = blockMouseUpBeforeStage()
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    unblock()
+
+    // 不等延後的確認，馬上開始下一次框選：上一次拖曳要先以一筆 Undo 收尾。
+    press(10, 10)
+    move(50, 50)
+    releaseOnStage(50, 50)
+    await macrotask()
+
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(undoDepth(store)).toBe(1)
+  })
+})
+
 // ── Listener 清理 ────────────────────────────────────────────────────────────
 
 describe('CanvasArea：window mouseup listener', () => {
@@ -571,5 +691,21 @@ describe('CanvasArea：window mouseup listener', () => {
 
     add.mockRestore()
     remove.mockRestore()
+  })
+
+  it('unmount 時取消尚未執行的延後確認', async () => {
+    const store = await mountCanvas([rect('a')])
+    const unblock = blockMouseUpBeforeStage()
+
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    unblock()
+    const push = vi.spyOn(store, 'pushSnapshot')
+    wrapper!.unmount()
+    wrapper = null
+    await macrotask()
+
+    expect(push).not.toHaveBeenCalled()
   })
 })

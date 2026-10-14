@@ -126,13 +126,16 @@ let _gesture: GestureState = { kind: 'idle' }
 // marquee 完成後抑制 stage click → clearSelection（Konva 不知道我們在手動拖曳）
 let _suppressNextStageClick = false
 /**
- * 目前這次按壓是不是從 Stage 開始的、而且還沒放開。
+ * 從 Stage 開始、還沒放開的那次按壓是哪顆按鍵；沒有就是 null。
  *
  * Konva 的滑鼠事件只綁在 Stage 自己的 DOM 上：拖出畫布後在外面放開，Stage 收不到
- * mouseup，手勢會一直停在進行中。所以另外在 window 聽 mouseup，用這個旗標判斷
- * 那個 mouseup 是不是在結束一次從畫布開始、Stage 卻沒收到放開的按壓。
+ * mouseup，手勢會一直停在進行中。所以另外在 window 聽 mouseup，用這個值判斷
+ * 那個 mouseup 是不是在放開這次按壓的按鍵。記按鍵而不只記「有按壓」：左鍵拖曳中
+ * 按放右鍵，不能被當成左鍵放開。
  */
-let _pressOnStage = false
+let _pressButton: number | null = null
+/** 落在 Stage 上的 mouseup，等事件派發完再確認 Stage 有沒有真的處理（見 onWindowMouseUp）。 */
+let _stageMouseUpCheck: ReturnType<typeof setTimeout> | null = null
 
 // ── Grid 可見性（hysteresis） ─────────────────────────────────────────────────
 
@@ -929,17 +932,34 @@ function onContainerWheel(e: WheelEvent): void {
 }
 
 /**
- * 在畫布外放開滑鼠：從 Stage 開始的按壓，Stage 卻沒收到它的 mouseup。
+ * 放開滑鼠時 Stage 沒收到 mouseup：多半是在畫布外放開，也可能是事件在途中被攔下。
  *
  * 以 capture 階段註冊在 window：畫布外的元素（面板、Teleport 到 body 的留言圖釘等）
  * 就算 stopPropagation，這裡也收得到。
  *
- * 落在 Stage 上的 mouseup 交給 Stage 自己處理，這裡直接略過，同一次放開只會結束一次。
+ * 落在 Stage 上的 mouseup 照常交給 Stage 處理，同一次放開只會結束一次。capture 比
+ * Stage 早執行，這時還不知道 Stage 收不收得到，所以等這次派發結束再確認：Stage 處理過
+ * 的話 _pressButton 已經清掉，不會再做任何事。
  */
 function onWindowMouseUp(e: MouseEvent): void {
-  if (!_pressOnStage) return
-  if (e.target instanceof Node && stage?.content.contains(e.target)) return
-  _pressOnStage = false
+  if (_pressButton === null || e.button !== _pressButton) return
+  if (e.target instanceof Node && stage?.content.contains(e.target)) {
+    _stageMouseUpCheck ??= setTimeout(flushStageMouseUpCheck, 0)
+    return
+  }
+  endPressWithoutStageMouseUp()
+}
+
+/** 執行還沒跑的 Stage mouseup 確認。下一次按下時也會先跑，不讓舊的確認誤收新的按壓。 */
+function flushStageMouseUpCheck(): void {
+  if (_stageMouseUpCheck === null) return
+  clearTimeout(_stageMouseUpCheck)
+  _stageMouseUpCheck = null
+  if (_pressButton !== null) endPressWithoutStageMouseUp()
+}
+
+function endPressWithoutStageMouseUp(): void {
+  _pressButton = null
 
   // 沒有進行中的手勢（點文字、放留言等）就跟以前一樣不處理。
   if (_gesture.kind === 'idle') return
@@ -953,8 +973,9 @@ function onWindowMouseUp(e: MouseEvent): void {
 // ── Gesture Handlers ───────────────────────────────────────────────────────────
 
 function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
+  flushStageMouseUpCheck()
   if (e.evt.button !== 0 && e.evt.button !== 1) return
-  _pressOnStage = true
+  _pressButton = e.evt.button
   const tool = toolStore.activeTool
   const world = pointerWorld()
   const targetAttrs = e.target.getAttrs() as Record<string, unknown>
@@ -1211,14 +1232,14 @@ function onMouseMove(): void {
 /**
  * 結束這次按壓的手勢。
  *
- * releasedOnStage = false 表示滑鼠是在畫布外放開的（見 onWindowMouseUp）。這時不讀
- * stage.getPointerPosition()：Stage 最後記下的是滑鼠離開畫布那一刻的位置，不是放開的
- * 位置。各手勢改用畫面上最後呈現的狀態收尾——拖曳、縮放、框選本來就是，繪製用預覽
+ * releasedOnStage = false 表示 Stage 沒收到這次 mouseup（見 onWindowMouseUp）。這時不讀
+ * stage.getPointerPosition()：Stage 最後記下的是離開畫布或最後一次移動時的位置，不是
+ * 放開的位置。各手勢改用畫面上最後呈現的狀態收尾——拖曳、縮放、框選本來就是，繪製用預覽
  * 最後更新到的點，Pencil 不補最後一點。
  */
 function onMouseUp(releasedOnStage: boolean): void {
   const g = _gesture
-  _pressOnStage = false
+  _pressButton = null
   stage.container().style.cursor = toolStore.cursor
 
   if (g.kind === 'panning') {
@@ -1410,6 +1431,7 @@ onUnmounted(() => {
   // （`/` → 專案列表 → `/`）回來會看到上次沒關的留言框。
   commentStore.close()
   commentStore.flush()
+  if (_stageMouseUpCheck !== null) clearTimeout(_stageMouseUpCheck)
   _resizeObserver?.disconnect()
   measurementService.destroy()
   stage?.destroy()
