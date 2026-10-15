@@ -132,6 +132,9 @@ let _suppressNextStageClick = false
  * mouseup，手勢會一直停在進行中。所以另外在 window 聽 mouseup，用這個值判斷
  * 那個 mouseup 是不是在放開這次按壓的按鍵。記按鍵而不只記「有按壓」：左鍵拖曳中
  * 按放右鍵，不能被當成左鍵放開。
+ *
+ * mouseup 完全沒送到時（例如拖曳中切換視窗），回到畫布的第一個 mousemove 會從
+ * buttons 看出這顆鍵已經放開，同樣替它收尾（見 registerStageEvents）。
  */
 let _pressButton: number | null = null
 /** 落在 Stage 上的 mouseup，等事件派發完再確認 Stage 有沒有真的處理（見 onWindowMouseUp）。 */
@@ -881,7 +884,15 @@ function registerStageEvents(): void {
   })
 
   stage.on('mousedown', (e: Konva.KonvaEventObject<MouseEvent>) => onMouseDown(e))
-  stage.on('mousemove', () => onMouseMove())
+  stage.on('mousemove', (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // 按下的那顆鍵已經不在 buttons 裡，mouseup 卻沒有送到（例如拖曳中切換視窗，在別處
+    // 放開後才回到畫布）：先以 Stage 沒收到 mouseup 的方式收尾，不讓元素繼續跟著滑鼠。
+    // 收尾用的是畫面上最後的狀態，不用這次移動的位置；這次移動接著當一般的 hover 處理。
+    if (_pressButton !== null && !(e.evt.buttons & BUTTONS_MASK[_pressButton])) {
+      endPressWithoutStageMouseUp()
+    }
+    onMouseMove()
+  })
   // 只有放開的是開始這次按壓的那顆鍵，才結束手勢。
   stage.on('mouseup', (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (e.evt.button === _pressButton) onMouseUp(true)

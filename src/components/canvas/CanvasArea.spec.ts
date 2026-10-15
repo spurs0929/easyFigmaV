@@ -828,6 +828,326 @@ describe('CanvasArea：畫布上的按鍵交錯', () => {
   })
 })
 
+// ── mouseup 完全沒送到：回到畫布的 mousemove 從 buttons 收尾 ───────────────
+//
+//  例如拖曳中切換視窗、在別的視窗放開：window 與 Stage 都收不到 mouseup。
+//  回到畫布後第一個 mousemove 的 buttons 已經沒有按下的那顆鍵。
+//  注意 button 與 buttons 的編號不同：左鍵 button 0 / buttons 1，中鍵 button 1 / buttons 4，
+//  右鍵 button 2 / buttons 2。
+
+describe('CanvasArea：mouseup 沒送到，回到畫布的 mousemove 收尾', () => {
+  it('拖曳：buttons 為 0 時停在最後的位置、只建立一筆 Undo、手勢回到 idle', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(170, 180)
+    // 在別的視窗放開，mouseup 沒有送到任何地方，然後回到畫布移動。
+    hover(400, 400)
+
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(undoDepth(store)).toBe(1)
+
+    hover(500, 500)
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+
+    // 手勢回到 idle，Undo 不再被「手勢進行中忽略 Undo」擋下。
+    pressUndo()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    pressRedo()
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+  })
+
+  it('縮放：buttons 為 0 時以最後的尺寸結束、只建立一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(200, 200) // 右下角把手
+    move(260, 250)
+    hover(400, 400)
+
+    expect(box(store, 'a')).toEqual({ x: 100, y: 100, width: 160, height: 150 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('框選：buttons 為 0 時以最後的框完成選取，框不殘留、不產生 History', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 600, y: 100 })])
+
+    press(50, 50)
+    move(300, 300)
+    hover(790, 590)
+
+    expect([...store.selectedIds]).toEqual(['a'])
+    const marquees = stage.find((n: Konva.Node) => n instanceof Konva.Rect && n.dash().length > 0)
+    expect(marquees.filter((n) => !store.get(n.id()))).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('繪製：buttons 為 0 時以最後的預覽建立一個元素、一筆 Undo', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Rect)
+    await nextTick()
+
+    press(600, 400)
+    move(700, 500)
+    hover(780, 590)
+
+    const created = Object.values(store.byId)
+    expect(created).toHaveLength(1)
+    // 用預覽最後的點，不用這次 mousemove 的位置。
+    expect(created[0]).toMatchObject({ x: 600, y: 400, width: 100, height: 100 })
+    expect(useToolStore().activeTool).toBe(ToolType.Move)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('Pencil：buttons 為 0 時以已取樣的點完成筆畫、一筆 Undo', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pencil)
+    await nextTick()
+
+    press(100, 100)
+    move(200, 100)
+    move(300, 150)
+    hover(500, 500)
+
+    expect(vectors(store)).toHaveLength(1)
+    expect(vectors(store)[0]).toMatchObject({ x: 100, y: 100, width: 200, height: 50 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('Pencil：buttons 為 0 收尾後，下一次點擊空白處不會被吃掉', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pencil)
+    await nextTick()
+
+    press(100, 100)
+    move(200, 100)
+    hover(500, 500)
+    expect(store.selectedIds.size).toBe(1)
+
+    // 這次按壓不會有 stage click，按下時設的抑制要撤回。
+    useToolStore().setTool(ToolType.Hand)
+    await nextTick()
+    press(700, 500)
+    releaseOnStage(700, 500)
+    expect([...store.selectedIds]).toEqual([])
+  })
+
+  it('Hand 平移：buttons 為 0 時停止平移、還原游標，不產生 History', async () => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+    useToolStore().setTool(ToolType.Hand)
+    await nextTick()
+
+    press(400, 300)
+    move(500, 350)
+    hover(100, 100)
+
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 50 })
+    expect(stage.container().style.cursor).toBe(useToolStore().cursor)
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('Pen：buttons 為 0 時只結束這次按壓，草稿保留、不再拉把手', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pen)
+    await nextTick()
+
+    press(100, 100)
+    move(150, 100) // 拉出第一個錨點的出把手
+    hover(400, 400)
+
+    const preview = stage.findOne((n: Konva.Node) => Array.isArray(n.getAttr('vectorPoints')))!
+    expect(preview.getAttr('vectorPoints')[0].handleOut).toEqual({ x: 150, y: 100 })
+
+    press(300, 100)
+    releaseOnStage(300, 100)
+    key('Enter')
+
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+})
+
+describe('CanvasArea：mousemove 的按鍵仍按著時不提前結束', () => {
+  it.each([
+    ['只有左鍵', 1],
+    ['左鍵與右鍵', 1 | 2],
+    ['左鍵與中鍵', 1 | 4],
+  ])('左鍵拖曳，buttons 為%s：拖曳繼續、放開後一筆 Undo', async (_label, buttons) => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(200, 150, { buttons })
+    move(250, 150, { buttons })
+    expect(box(store, 'a')).toMatchObject({ x: 200, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+
+    releaseOnStage(250, 150)
+    await macrotask()
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it.each([
+    ['只有中鍵', 4],
+    ['中鍵與左鍵', 4 | 1],
+    ['中鍵與右鍵', 4 | 2],
+  ])('中鍵平移，buttons 為%s：平移繼續', async (_label, buttons) => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(400, 300, { button: 1, buttons: 4 })
+    move(450, 300, { buttons })
+    move(500, 300, { buttons })
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
+
+    releaseOnStage(500, 300, { button: 1, buttons: 0 })
+    await macrotask()
+    hover(100, 100)
+    expect(viewport.viewport).toMatchObject({ x: 100, y: 0 })
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('左鍵拖曳中在畫布上按住右鍵移動、放開右鍵後繼續：拖曳不中斷、一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(200, 150)
+    press(200, 150, { button: 2, buttons: 1 | 2 })
+    move(250, 150, { buttons: 1 | 2 })
+    releaseOnStage(250, 150, { button: 2, buttons: 1 })
+    move(300, 150, { buttons: 1 })
+    expect(box(store, 'a')).toMatchObject({ x: 250, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+
+    releaseOnStage(300, 150)
+    await macrotask()
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('只按右鍵不建立按壓：右鍵按著移動不影響之後的左鍵拖曳', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150, { button: 2, buttons: 2 })
+    move(200, 150, { buttons: 2 })
+    releaseOnStage(200, 150, { button: 2, buttons: 0 })
+    await macrotask()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+
+    press(150, 150)
+    move(200, 150, { buttons: 1 })
+    expect(box(store, 'a')).toMatchObject({ x: 150, y: 100 })
+    releaseOnStage(200, 150)
+    await macrotask()
+    expect(undoDepth(store)).toBe(1)
+  })
+})
+
+describe('CanvasArea：mousemove 的多按鍵交錯不誤判', () => {
+  it.each([
+    ['只剩右鍵', 2],
+    ['只剩中鍵', 4],
+  ])('左鍵拖曳，buttons %s（左鍵已放開）：結束拖曳、一筆 Undo', async (_label, buttons) => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(150, 150)
+    move(170, 180)
+    move(400, 400, { buttons })
+    move(500, 500, { buttons })
+
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(viewport.viewport).toMatchObject({ x: 0, y: 0 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it.each([
+    // buttons 1 是左鍵，不是 button 1（中鍵）：不能把兩者當成同一顆鍵。
+    ['只剩左鍵', 1],
+    ['只剩右鍵', 2],
+  ])('中鍵平移，buttons %s（中鍵已放開）：停止平移，不開始拖曳', async (_label, buttons) => {
+    const store = await mountCanvas([rect('a')])
+    const viewport = useViewportStore()
+
+    press(400, 300, { button: 1, buttons: 4 })
+    move(450, 300, { buttons: 4 })
+    // 平移 50 之後元素在螢幕上的 x 範圍是 150–250：移到元素上。
+    move(200, 150, { buttons })
+    move(250, 200, { buttons })
+
+    expect(viewport.viewport).toMatchObject({ x: 50, y: 0 })
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+})
+
+describe('CanvasArea：mousemove 收尾不重複結束、不重複寫入 History', () => {
+  it('連續多個 buttons 為 0 的 mousemove：只收尾一次', async () => {
+    const store = await mountCanvas([rect('a')])
+    const push = vi.spyOn(store, 'pushSnapshot')
+
+    press(150, 150)
+    move(170, 180)
+    hover(400, 400)
+    hover(450, 450)
+    hover(500, 500)
+
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('收尾之後才送到的 mouseup（畫布上、畫布外）不再寫入 History', async () => {
+    const store = await mountCanvas([rect('a')])
+    const push = vi.spyOn(store, 'pushSnapshot')
+
+    press(150, 150)
+    move(170, 180)
+    hover(400, 400)
+    releaseOnStage(400, 400)
+    releaseOutside(1000, 400)
+    await macrotask()
+
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('被攔下的 mouseup 還沒補收尾就移動：只收尾一次', async () => {
+    const store = await mountCanvas([rect('a')])
+    const push = vi.spyOn(store, 'pushSnapshot')
+
+    const unblock = blockMouseUpBeforeStage()
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    unblock()
+    // 延後確認還沒跑：先來的 mousemove 收尾，之後的確認不能再收一次。
+    hover(400, 400)
+    await macrotask()
+
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('收尾之後再按下：新手勢正常開始，兩次操作各一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(170, 180)
+    hover(400, 400)
+
+    press(200, 200)
+    move(200, 300)
+    releaseOnStage(200, 300)
+    await macrotask()
+
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 230 })
+    expect(undoDepth(store)).toBe(2)
+  })
+})
+
 // ── Stage 沒收到落在畫布上的 mouseup ─────────────────────────────────────────
 
 describe('CanvasArea：落在畫布上的 mouseup 被攔下', () => {
