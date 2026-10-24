@@ -29,35 +29,54 @@ export interface DuplicateResult {
 }
 
 /**
+ * el 是否真的是 parentId 的子元素（parentId 為 undefined 表示根層級）。
+ *
+ * 只有 childIds（或 rootIds）列了它、而且它自己的 parentId 也指回來，才算數。
+ * 雙向不一致的關聯一律略過、不修復：畫布的 absoluteCoords 沿 parentId 計算位置，
+ * 只看 childIds 會把元素複製到畫面上不屬於它的父元素底下。
+ */
+function isChildOf(
+  el: CanvasElement | undefined,
+  parentId: string | undefined,
+): el is CanvasElement {
+  return el !== undefined && el.parentId === parentId
+}
+
+/**
  * 依文件樹的繪製順序替每個「從 rootIds 走得到」的元素編號（前序：父元素先於子元素，
- * 同一層依 childIds / rootIds 由下到上）。走不到的元素（不在樹上的孤兒）不會出現在結果裡。
- * 以 visited 擋住循環參照與同一個子元素掛在多個父元素底下的情況。
+ * 同一層依 childIds / rootIds 由下到上）。只沿雙向一致的關聯往下走（見 isChildOf），
+ * 走不到的元素（不在樹上的孤兒、只被不一致的關聯指到的元素）不會出現在結果裡。
+ * 以 visited 擋住同一個 id 在 childIds / rootIds 裡重複出現的情況。
  */
 function layerOrder(store: ElementStore): Map<string, number> {
   const order = new Map<string, number>()
-  const visit = (id: string): void => {
+  const visit = (id: string, parentId: string | undefined): void => {
     const el = store.byId[id]
-    if (!el || order.has(id)) return
+    if (!isChildOf(el, parentId) || order.has(id)) return
     order.set(id, order.size)
-    for (const childId of el.childIds) visit(childId)
+    for (const childId of el.childIds) visit(childId, id)
   }
-  for (const id of store.rootIds) visit(id)
+  for (const id of store.rootIds) visit(id, undefined)
   return order
 }
 
-/** 沿 parentId 往上走過的所有祖先 id（不含自己）；遇到循環或斷掉的鏈就停。 */
-function ancestorIds(store: ElementStore, el: CanvasElement): string[] {
-  const result: string[] = []
-  const seen = new Set<string>([el.id])
+/**
+ * 元素在畫布上的絕對位置：沿 parentId 累加每一層祖先的 x / y（與畫布的 absoluteCoords 一致）。
+ *
+ * 只用在 layerOrder 走得到的元素上。這些元素是沿雙向一致的關聯從根層級走下來的，
+ * parentId 鏈一定一路接回根層級，所以不需要循環或斷鏈的保護。
+ */
+function absolutePosition(store: ElementStore, el: CanvasElement): { x: number; y: number } {
+  let x = el.x
+  let y = el.y
   let parentId = el.parentId
-  while (parentId !== undefined && !seen.has(parentId)) {
+  while (parentId !== undefined) {
     const parent = store.byId[parentId]
-    if (!parent) break
-    result.push(parentId)
-    seen.add(parentId)
+    x += parent.x
+    y += parent.y
     parentId = parent.parentId
   }
-  return result
+  return { x, y }
 }
 
 /**
@@ -69,7 +88,9 @@ function ancestorIds(store: ElementStore, el: CanvasElement): string[] {
  *   （沿 parentId 累加各層祖先的 x / y，與畫布的 absoluteCoords 一致；群組的 rotation
  *   不套用到子元素，畫布也不套用），再加上 offset，並重新命名。
  * - 子孫遞迴複製任意深度：全部換新 id、重建 parentId / childIds，座標維持相對父元素。
- *   childIds 裡指到不存在元素的 id 直接丟掉，不會帶進複本。
+ *   只複製雙向一致的子元素（childIds 列了它、它的 parentId 也指回來，見 isChildOf）；
+ *   指到不存在的元素、或 parentId 指向別處的 id 直接略過。不會修改原始文件，
+ *   也不會反過來搜尋 parentId 指向自己、卻沒列在 childIds 裡的元素來補上。
  * - 深拷貝：用 cloneCanvasElementSnapshot（與存檔相同的欄位），複本與原件不共用
  *   fill、stroke、points、vectorPoints、childIds 等任何物件或陣列。
  * - 頂層複本依原件的圖層順序排列（與選取的先後無關）。
@@ -90,7 +111,7 @@ export function duplicateElements(
 
   const elements: CanvasElement[] = []
   const rootIds: string[] = []
-  // 已經複製過的原件。除了上面的祖先 / 子孫，也擋住不一致的樹裡同一個元素被複製兩次。
+  // 已經複製過的原件。除了上面的祖先 / 子孫，也擋住同一個 childIds 裡重複列出的 id。
   const copied = new Set<string>()
 
   /** 複製 source 與它的整棵子樹（前序推入 elements），回傳 source 的複本。 */
@@ -103,7 +124,7 @@ export function duplicateElements(
     elements.push(copy)
     for (const childId of source.childIds) {
       const child = store.byId[childId]
-      if (!child || copied.has(childId)) continue
+      if (!isChildOf(child, source.id) || copied.has(childId)) continue
       copy.childIds.push(copySubtree(child, copy.id).id)
     }
     return copy
@@ -112,12 +133,7 @@ export function duplicateElements(
   for (const id of requested) {
     if (copied.has(id)) continue
     const source = store.byId[id]
-    let x = source.x
-    let y = source.y
-    for (const ancestorId of ancestorIds(store, source)) {
-      x += store.byId[ancestorId].x
-      y += store.byId[ancestorId].y
-    }
+    const { x, y } = absolutePosition(store, source)
 
     const copy = copySubtree(source, undefined)
     copy.name = options.rename(source.name)

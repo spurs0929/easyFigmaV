@@ -369,7 +369,7 @@ describe('duplicateElements', () => {
       expect(result.elements[0].childIds).toEqual(['n2'])
     })
 
-    it('同一個子元素掛在兩個群組底下：只複製一次，複本裡不會有兩個父元素', () => {
+    it('同一個子元素被兩個群組列在 childIds：只複製到 parentId 指向的群組底下', () => {
       const store = storeOf([
         group('g1', ['shared']),
         group('g2', ['shared']),
@@ -384,13 +384,15 @@ describe('duplicateElements', () => {
       expect(copies.n3.childIds).toEqual([])
     })
 
-    it('元素同時在 rootIds 與某個群組的 childIds 裡：兩者都被選取時只複製一次', () => {
-      const store = storeOf([group('g', ['a']), el('a')], ['g', 'a'])
+    it('根元素也被列在某個群組的 childIds 裡：不算群組的子元素，各自獨立複製', () => {
+      const store = deepFreeze(storeOf([group('g', ['a']), el('a')], ['g', 'a']))
 
       const result = duplicateElements(store, ['g', 'a'], options())
+      const copies = byId(result.elements)
 
-      expect(result.elements).toHaveLength(2)
-      expect(result.rootIds).toEqual(['n1'])
+      expect(result.rootIds).toEqual(['n1', 'n2'])
+      expect(copies.n1).toMatchObject({ name: 'g copy', childIds: [] })
+      expect(copies.n2).toMatchObject({ name: 'a copy', parentId: undefined, childIds: [] })
     })
 
     it('同一個 childIds 裡重複的 id 只複製一次', () => {
@@ -402,6 +404,18 @@ describe('duplicateElements', () => {
       expect(result.elements[0].childIds).toEqual(['n2'])
     })
 
+    it('childIds 裡重複列出的 id：以第一次出現的位置決定圖層順序', () => {
+      const store = storeOf([
+        group('g', ['a', 'b', 'a']),
+        el('a', { parentId: 'g' }),
+        el('b', { parentId: 'g' }),
+      ])
+
+      const result = duplicateElements(store, ['b', 'a'], options())
+
+      expect(result.elements.map((e) => e.name)).toEqual(['a copy', 'b copy'])
+    })
+
     it('childIds 形成循環：不會無限遞迴', () => {
       const store = storeOf([group('g', ['h']), group('h', ['g'], { parentId: 'g' })])
 
@@ -411,7 +425,7 @@ describe('duplicateElements', () => {
       expect(result.elements[1].childIds).toEqual([])
     })
 
-    it('parentId 形成循環：計算祖先時不會無限迴圈', () => {
+    it('parentId 形成循環：這些元素接不回根層級，直接略過，不會無限迴圈', () => {
       const store = storeOf(
         [
           group('g', ['h']),
@@ -422,10 +436,145 @@ describe('duplicateElements', () => {
         ['g'],
       )
 
-      const result = duplicateElements(store, ['a'], options())
+      expect(duplicateElements(store, ['a', 'h', 'k'], options())).toEqual({
+        elements: [],
+        rootIds: [],
+      })
+      expect(duplicateElements(store, ['g'], options()).elements).toHaveLength(1)
+    })
+  })
 
-      expect(result.rootIds).toEqual(['n1'])
-      expect(result.elements).toHaveLength(1)
+  describe('父子關係不一致：childIds 與 parentId 雙向一致才複製', () => {
+    /**
+     * rootIds = [A, B]；A 與 B 的 childIds 都列了 C，但 C.parentId = B。
+     * C 在畫布上的位置是相對 B 算的（absoluteCoords 走 parentId），所以 C 屬於 B。
+     */
+    function conflictStore(): ElementStore {
+      return deepFreeze(
+        storeOf(
+          [
+            group('A', ['C'], { x: 100, y: 0 }),
+            group('B', ['C'], { x: 0, y: 200 }),
+            el('C', { x: 5, y: 6, parentId: 'B' }),
+          ],
+          ['A', 'B'],
+        ),
+      )
+    }
+
+    it('只複製 A：不包含 C', () => {
+      const result = duplicateElements(conflictStore(), ['A'], options())
+
+      expect(result.elements).toEqual([
+        { ...group('A', [], { x: 110, y: 10 }), id: 'n1', name: 'A copy' },
+      ])
+    })
+
+    it('只複製 B：正常包含 C，座標仍相對 B', () => {
+      const result = duplicateElements(conflictStore(), ['B'], options())
+      const copies = byId(result.elements)
+
+      expect(result.elements.map((e) => e.id)).toEqual(['n1', 'n2'])
+      expect(copies.n1.childIds).toEqual(['n2'])
+      expect(copies.n2).toMatchObject({ name: 'C', parentId: 'n1', x: 5, y: 6 })
+    })
+
+    it('同時複製 A、B：C 只存在於 B 的複本下', () => {
+      const result = duplicateElements(conflictStore(), ['A', 'B'], options())
+      const copies = byId(result.elements)
+
+      expect(result.rootIds).toEqual(['n1', 'n2'])
+      expect(copies.n1).toMatchObject({ name: 'A copy', childIds: [] })
+      expect(copies.n2).toMatchObject({ name: 'B copy', childIds: ['n3'] })
+      expect(copies.n3).toMatchObject({ name: 'C', parentId: 'n2' })
+      expect(result.elements).toHaveLength(3)
+    })
+
+    it.each([
+      ['B 在前', ['B', 'C']],
+      ['C 在前', ['C', 'B']],
+      ['三個都選', ['C', 'A', 'B']],
+    ])('B 與 C 同時選取（%s）：C 只隨 B 複製一次，不會先被當成頂層複本', (_label, ids) => {
+      const result = duplicateElements(conflictStore(), ids, options())
+      const copies = byId(result.elements)
+
+      expect(result.elements.map((e) => e.name).filter((name) => name.startsWith('C'))).toEqual([
+        'C',
+      ])
+      const cCopy = result.elements.find((e) => e.name === 'C')!
+      expect(copies[cCopy.parentId!].name).toBe('B copy')
+    })
+
+    it('只選 C：以 B（parentId）為原點換算絕對座標', () => {
+      const [copy] = duplicateElements(conflictStore(), ['C'], options()).elements
+
+      // C (5, 6) + B (0, 200) + offset (10, 10)
+      expect(copy).toMatchObject({ name: 'C copy', parentId: undefined, x: 15, y: 216 })
+    })
+
+    it.each([
+      ['群組在前', ['g', 'x']],
+      ['x 在前', ['x', 'g']],
+    ])(
+      'rootIds 與群組的 childIds 都列了 x、x.parentId 指向群組（%s）：x 是群組的子元素',
+      (_label, rootIds) => {
+        const store = deepFreeze(
+          storeOf(
+            [group('g', ['x'], { x: 50, y: 60 }), el('x', { x: 1, y: 2, parentId: 'g' })],
+            rootIds,
+          ),
+        )
+
+        const both = duplicateElements(store, ['x', 'g'], options())
+        const [alone] = duplicateElements(store, ['x'], options()).elements
+
+        expect(both.rootIds).toEqual(['n1'])
+        expect(both.elements).toHaveLength(2)
+        expect(alone).toMatchObject({ x: 61, y: 72 })
+      },
+    )
+
+    it.each([[['A']], [['B']], [['A', 'B']], [['C']]])('原始文件完全不變（複製 %j）', (ids) => {
+      const store = conflictStore()
+      const before = JSON.stringify(store)
+
+      duplicateElements(store, ids, options())
+
+      expect(JSON.stringify(store)).toBe(before)
+    })
+
+    it('C.parentId 指向 B，但 B.childIds 沒有 C：不主動補進 C', () => {
+      const store = deepFreeze(
+        storeOf([group('B', [], { x: 0, y: 200 }), el('C', { parentId: 'B' })], ['B']),
+      )
+
+      const result = duplicateElements(store, ['B'], options())
+
+      expect(result.elements).toEqual([
+        { ...group('B', [], { x: 10, y: 210 }), id: 'n1', name: 'B copy' },
+      ])
+    })
+
+    it('較深的層級出現不一致：只略過那一個子元素，其餘子樹照常複製', () => {
+      const store = deepFreeze(
+        storeOf(
+          [
+            group('outer', ['inner']),
+            group('inner', ['p', 'stray', 'q'], { parentId: 'outer' }),
+            el('p', { parentId: 'inner' }),
+            el('stray', { parentId: 'other' }),
+            el('q', { parentId: 'inner' }),
+            group('other', ['stray']),
+          ],
+          ['outer', 'other'],
+        ),
+      )
+
+      const result = duplicateElements(store, ['outer'], options())
+      const copies = byId(result.elements)
+
+      expect(result.elements.map((e) => e.name)).toEqual(['outer copy', 'inner', 'p', 'q'])
+      expect(copies.n2.childIds).toEqual(['n3', 'n4'])
     })
   })
 })
