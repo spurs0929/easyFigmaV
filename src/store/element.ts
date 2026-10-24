@@ -370,47 +370,79 @@ export const useElementStore = defineStore('element', () => {
    * 回傳被還原的子元素 id 列表，供呼叫方重新選取。
    */
   function ungroup(id: string): string[] {
+    return ungroupMany([id])
+  }
+
+  /**
+   * 一次解散多個 Group，整批只推一筆 undo 快照。
+   *
+   * 多選解散不能逐一呼叫 ungroup()：那樣每個群組各佔一筆 undo，使用者要按 N 次
+   * 才能還原一次操作，而且中間每一步都是「只解散了一部分」的狀態。
+   *
+   * 結果與「依序對每個 id 呼叫 ungroup()」完全相同，只差在 history 只有一筆：
+   * - 依 ids 的順序逐一處理，每一個都套用在前一個處理完的結果上。
+   * - 只解散當下位於 root level 的 Group；不存在、不是 Group、或仍在別的群組裡的 id
+   *   直接略過。祖先與子孫群組同時出現時，祖先先處理，子孫會在輪到它時已回到 root
+   *   而跟著被解散；子孫先處理則會被略過（UI 只能選取 root 元素，不會出現這種組合）。
+   * - 沒有解散任何群組時完全不動 store：不推快照、不清 redo、也不遞增 documentRevision。
+   * - 被解散的群組 id 從 selectedIds 移除。
+   *
+   * 回傳被還原的子元素 id（依處理順序），供呼叫方重新選取；本身也在同一批被解散的
+   * 群組不會出現在回傳值裡。
+   *
+   * 既有的 store 物件（也就是 history 裡的快照）不會被修改：byId 先淺拷貝，
+   * 子元素一律以新物件取代。
+   */
+  function ungroupMany(ids: readonly string[]): string[] {
     const s = _store.value
-    const group = s.byId[id]
-    if (!group || group.kind !== ElementKind.Group) return []
-
-    const childIds = [...group.childIds]
-    const groupIdx = s.rootIds.indexOf(id)
-    if (groupIdx === -1) return []
-
     const newById = { ...s.byId }
-    delete newById[id]
+    const newRootIds = [...s.rootIds]
+    const dissolved = new Set<string>()
+    const restoredChildIds: string[] = []
 
-    // 子元素座標還原為絕對座標
-    for (const childId of childIds) {
-      const child = newById[childId]
-      if (child) {
-        newById[childId] = {
-          ...child,
-          parentId: undefined,
-          x: child.x + group.x,
-          y: child.y + group.y,
+    for (const id of ids) {
+      const group = newById[id]
+      if (!group || group.kind !== ElementKind.Group) continue
+
+      const groupIdx = newRootIds.indexOf(id)
+      if (groupIdx === -1) continue
+
+      const childIds = [...group.childIds]
+      delete newById[id]
+
+      // 子元素座標還原為絕對座標
+      for (const childId of childIds) {
+        const child = newById[childId]
+        if (child) {
+          newById[childId] = {
+            ...child,
+            parentId: undefined,
+            x: child.x + group.x,
+            y: child.y + group.y,
+          }
         }
       }
+
+      // 以子元素取代 Group 的位置（維持 z-order）
+      newRootIds.splice(groupIdx, 1, ...childIds)
+
+      dissolved.add(id)
+      restoredChildIds.push(...childIds)
     }
 
-    // 以子元素取代 Group 的位置（維持 z-order）
-    const newRootIds = [...s.rootIds]
-    newRootIds.splice(groupIdx, 1, ...childIds)
+    if (dissolved.size === 0) return []
 
     _store.value = { byId: newById, rootIds: newRootIds }
 
-    _selectedIds.value = (() => {
-      const next = new Set(_selectedIds.value)
-      next.delete(id)
-      return next
-    })()
+    if ([..._selectedIds.value].some((id) => dissolved.has(id))) {
+      _selectedIds.value = new Set([..._selectedIds.value].filter((id) => !dissolved.has(id)))
+    }
 
     _pushSnapshot()
     assertStoreIntegrity(_store.value)
     _touchDocument()
 
-    return childIds
+    return restoredChildIds.filter((id) => !dissolved.has(id))
   }
 
   // ── Z-Order ────────────────────────────────────────────────────────────────
@@ -582,6 +614,7 @@ export const useElementStore = defineStore('element', () => {
     syncGroupBounds,
     group,
     ungroup,
+    ungroupMany,
     // Z-Order
     bringToFront,
     sendToBack,

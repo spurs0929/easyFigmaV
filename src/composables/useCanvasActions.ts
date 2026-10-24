@@ -34,14 +34,21 @@ export function useCanvasActions() {
     elementStore.select(groupId)
   }
 
+  /**
+   * 解散目前選取的所有群組，整批是一筆 undo。
+   *
+   * 鍵盤的 Ctrl/Cmd+Shift+G、畫布與圖層面板的右鍵選單都走這裡。
+   * 不能逐一呼叫 ungroup()：那樣每個群組各佔一筆 undo，還原一次多選解散要按 N 次，
+   * 中間每一步都是只解散了一部分的狀態。
+   *
+   * 選取裡的非群組元素不受影響，但會被取消選取；解散後選取的是所有被還原的子元素。
+   */
   function ungroupSelected(): void {
     const groups = elementStore.selectedElements.filter((el) => el.kind === ElementKind.Group)
     if (groups.length === 0) return
     elementStore.clearSelection()
-    for (const group of groups) {
-      for (const childId of elementStore.ungroup(group.id)) {
-        elementStore.select(childId, true)
-      }
+    for (const childId of elementStore.ungroupMany(groups.map((group) => group.id))) {
+      elementStore.select(childId, true)
     }
   }
 

@@ -79,6 +79,58 @@ function select(store: Store, ids: string[]): void {
   for (const id of ids) store.select(id, true)
 }
 
+/**
+ * Ungroup 用的文件，座標都不是 0，解散時座標換算錯了才看得出來：
+ *
+ * rootIds = [g1, m, g2, outer, z]
+ * - g1 (10, 20)  > a (0, 0)、b (30, 0)
+ * - g2 (100, 150) > c (0, 0)、d (30, 20)
+ * - outer (400, 400) > inner (0, 10) > p (0, 0)、q (30, 30)；outer > r (80, 0)
+ * - m、z：不在群組裡的一般元素
+ */
+function buildUngroupFixture(store: Store): {
+  g1: string
+  g2: string
+  inner: string
+  outer: string
+} {
+  store.addAll([
+    rect('a', { x: 10, y: 20 }),
+    rect('b', { x: 40, y: 20 }),
+    rect('m', { x: 300, y: 300 }),
+    rect('c', { x: 100, y: 150 }),
+    rect('d', { x: 130, y: 170 }),
+    rect('p', { x: 400, y: 410 }),
+    rect('q', { x: 430, y: 440 }),
+    rect('r', { x: 480, y: 400 }),
+    rect('z', { x: 600, y: 600 }),
+  ])
+  const g1 = store.group(['a', 'b'])
+  const g2 = store.group(['c', 'd'])
+  const inner = store.group(['p', 'q'])
+  const outer = store.group([inner, 'r'])
+  return { g1, g2, inner, outer }
+}
+
+/** 非群組元素在畫布上的絕對位置（沿 parent 鏈累加；fixture 的群組都沒有旋轉）。 */
+function leafWorldPositions(store: Store): Record<string, { x: number; y: number }> {
+  const result: Record<string, { x: number; y: number }> = {}
+  for (const el of Object.values(store.byId)) {
+    if (el.kind === ElementKind.Group) continue
+    let x = el.x
+    let y = el.y
+    let parentId = el.parentId
+    while (parentId) {
+      const parent = store.get(parentId)!
+      x += parent.x
+      y += parent.y
+      parentId = parent.parentId
+    }
+    result[el.id] = { x, y }
+  }
+  return result
+}
+
 describe('useCanvasActions.deleteSelected', () => {
   let pinia: Pinia
   let store: Store
@@ -493,6 +545,286 @@ describe('useCanvasActions.deleteSelected', () => {
       expect(content(store)).toBe(before)
       // addAll 一筆、刪除一筆；undo 過一次，剩 addAll 那一筆。
       expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+
+      wrapper.unmount()
+    })
+  })
+})
+
+describe('useCanvasActions.ungroupSelected', () => {
+  let pinia: Pinia
+  let store: Store
+  let ungroupSelected: () => void
+
+  beforeEach(() => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    store = useElementStore()
+    ungroupSelected = useCanvasActions().ungroupSelected
+    // assertStoreIntegrity 發現不一致時只會 console.error。讓它直接丟出來，
+    // 每個測試都順帶驗證 byId / rootIds / parentId / childIds 的一致性。
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      throw new Error(`unexpected console.error: ${args.join(' ')}`)
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  describe('一次解散多個群組只產生一筆 Undo', () => {
+    it('兩個獨立群組：全部解散、位置不變；一次 Undo 完整恢復，一次 Redo 再次解散', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+      const before = content(store)
+      const worldBefore = leafWorldPositions(store)
+      const revision = store.documentRevision
+      select(store, [g1, g2])
+
+      ungroupSelected()
+
+      expect(rootOrder(store)).toEqual(['a', 'b', 'm', 'c', 'd', outer, 'z'])
+      expect(store.get(g1)).toBeUndefined()
+      expect(store.get(g2)).toBeUndefined()
+      expect(leafWorldPositions(store)).toEqual(worldBefore)
+      expect([...store.selectedIds]).toEqual(['a', 'b', 'c', 'd'])
+      // 整批只遞增一次：自動存檔只會被觸發一次。
+      expect(store.documentRevision).toBe(revision + 1)
+      const after = content(store)
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(store.get(g1)?.childIds).toEqual(['a', 'b'])
+      expect(store.get(g2)?.childIds).toEqual(['c', 'd'])
+      expect(rootOrder(store)).toEqual([g1, 'm', g2, outer, 'z'])
+
+      store.redo()
+      expect(content(store)).toBe(after)
+
+      // addAll 一筆、group 四筆、解散一筆，沒有任何空白的一筆。逐一解散的話 effective 會是 7。
+      expect(drainUndo(store)).toEqual({ effective: 6, empty: 0 })
+    })
+
+    it('全部三個群組（含巢狀的外層）一起解散：Undo 一次就回到解散前，不會停在部分解散的狀態', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [g1, g2, outer])
+
+      ungroupSelected()
+      expect(allIds(store)).not.toContain(g1)
+      expect(allIds(store)).not.toContain(g2)
+      expect(allIds(store)).not.toContain(outer)
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      store.redo()
+      // Redo 一步就全部解散，沒有剩下任何一個被選取的群組。
+      expect([g1, g2, outer].map((id) => store.get(id))).toEqual([undefined, undefined, undefined])
+    })
+
+    it('交給 ungroupMany 一次處理，不再逐一呼叫 ungroup', () => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      const ungroup = vi.spyOn(store, 'ungroup')
+      const ungroupMany = vi.spyOn(store, 'ungroupMany')
+      select(store, [g1, g2])
+
+      ungroupSelected()
+
+      expect(ungroup).not.toHaveBeenCalled()
+      expect(ungroupMany).toHaveBeenCalledTimes(1)
+      expect(ungroupMany.mock.calls[0][0]).toEqual([g1, g2])
+    })
+
+    it('連續兩次多群組解散是兩筆獨立的 Undo', () => {
+      const { g1, g2, outer, inner } = buildUngroupFixture(store)
+      select(store, [g1, g2])
+      ungroupSelected()
+      const afterFirst = content(store)
+      select(store, [outer])
+      ungroupSelected()
+      expect(store.get(inner)?.parentId).toBeUndefined()
+
+      store.undo()
+      expect(content(store)).toBe(afterFirst)
+      store.undo()
+      expect(store.get(g1)?.childIds).toEqual(['a', 'b'])
+    })
+  })
+
+  describe('既有行為不變', () => {
+    it('單一群組：子元素回到群組原本的圖層位置、位置不變、被選取，一筆 Undo', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+      const before = content(store)
+      const worldBefore = leafWorldPositions(store)
+      select(store, [g1])
+
+      ungroupSelected()
+
+      expect(rootOrder(store)).toEqual(['a', 'b', 'm', g2, outer, 'z'])
+      expect(store.get('a')?.parentId).toBeUndefined()
+      expect(leafWorldPositions(store)).toEqual(worldBefore)
+      expect([...store.selectedIds]).toEqual(['a', 'b'])
+      const after = content(store)
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      store.redo()
+      expect(content(store)).toBe(after)
+      // addAll 一筆、group 四筆、解散一筆。
+      expect(drainUndo(store)).toEqual({ effective: 6, empty: 0 })
+    })
+
+    it('群組與一般元素混合選取：只解散群組，一般元素不動但被取消選取，仍然只有一筆', () => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      const before = content(store)
+      const mBefore = store.get('m')
+      select(store, ['z', g1, 'm', g2])
+
+      ungroupSelected()
+
+      expect(rootOrder(store).slice(0, 5)).toEqual(['a', 'b', 'm', 'c', 'd'])
+      // 一般元素本身沒有被改寫。
+      expect(store.get('m')).toBe(mBefore)
+      expect([...store.selectedIds]).toEqual(['a', 'b', 'c', 'd'])
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
+    })
+
+    it('巢狀群組：只解散選取的外層，內層群組留在 root、結構完整並被選取，一次 Undo 恢復', () => {
+      const { inner, outer } = buildUngroupFixture(store)
+      const before = content(store)
+      const worldBefore = leafWorldPositions(store)
+      select(store, [outer])
+
+      ungroupSelected()
+
+      expect(store.get(outer)).toBeUndefined()
+      expect(store.get(inner)?.kind).toBe(ElementKind.Group)
+      expect(store.get(inner)?.parentId).toBeUndefined()
+      expect(store.get(inner)?.childIds).toEqual(['p', 'q'])
+      expect(store.get('p')?.parentId).toBe(inner)
+      expect(leafWorldPositions(store)).toEqual(worldBefore)
+      expect([...store.selectedIds]).toEqual([inner, 'r'])
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(store.get(inner)?.parentId).toBe(outer)
+    })
+  })
+
+  describe('選取裡沒有群組', () => {
+    it('只有一般元素：不動文件、不改選取、不遞增 documentRevision', () => {
+      buildUngroupFixture(store)
+      select(store, ['m', 'z'])
+      const before = content(store)
+      const revision = store.documentRevision
+
+      ungroupSelected()
+
+      expect(content(store)).toBe(before)
+      expect([...store.selectedIds]).toEqual(['m', 'z'])
+      expect(store.documentRevision).toBe(revision)
+    })
+
+    it('沒有選取：不動文件', () => {
+      buildUngroupFixture(store)
+      const before = content(store)
+      const revision = store.documentRevision
+
+      ungroupSelected()
+
+      expect(content(store)).toBe(before)
+      expect(store.documentRevision).toBe(revision)
+    })
+
+    it('Undo 之後以沒有群組的選取按 Ungroup：Redo 不被截斷', () => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      select(store, [g1, g2])
+      ungroupSelected()
+      const after = content(store)
+      store.undo()
+      select(store, ['m'])
+
+      ungroupSelected()
+
+      store.redo()
+      expect(content(store)).toBe(after)
+    })
+  })
+
+  describe('Ungroup 的入口都只產生一筆 Undo', () => {
+    function createKeyboard() {
+      return useCanvasKeyboard({
+        getGesture: () => ({ kind: 'idle' }),
+        cancelPenGesture: vi.fn(),
+        cancelPencilGesture: vi.fn(),
+        finishPenGesture: vi.fn(),
+        refreshPenGesture: vi.fn(),
+        pointerWorld: () => ({ x: 0, y: 0 }),
+        deleteSelected: vi.fn(),
+        duplicateSelected: vi.fn(),
+        groupSelected: vi.fn(),
+        ungroupSelected,
+        onAltRelease: vi.fn(),
+      })
+    }
+
+    it.each([
+      ['Ctrl+Shift+G', { ctrlKey: true }],
+      ['Cmd+Shift+G', { metaKey: true }],
+    ])('鍵盤 %s：多群組解散是一筆 Undo', (_label, modifier) => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [g1, g2])
+      const event = new KeyboardEvent('keydown', {
+        key: 'G',
+        shiftKey: true,
+        cancelable: true,
+        ...modifier,
+      })
+
+      createKeyboard().onKeydown(event)
+
+      expect(event.defaultPrevented).toBe(true)
+      expect(allIds(store)).not.toContain(g1)
+      expect(allIds(store)).not.toContain(g2)
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
+    })
+
+    it('右鍵選單的 Ungroup（畫布與圖層面板共用）：多群組解散是一筆 Undo', () => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [g1, g2])
+      const contextMenu: ContextMenuState = {
+        x: 0,
+        y: 0,
+        hasSelection: true,
+        canGroup: true,
+        canUngroup: true,
+      }
+      const wrapper = mount(SelectionContextMenu, {
+        props: { contextMenu },
+        global: { plugins: [pinia] },
+        attachTo: document.body,
+      })
+
+      // 選單 Teleport 到 body，不在 wrapper 的 DOM 樹裡。
+      const item = [...document.body.querySelectorAll<HTMLElement>('.ctx-item')].find((el) =>
+        el.textContent?.trim().startsWith('Ungroup'),
+      )
+      expect(item).toBeDefined()
+      item!.click()
+
+      expect(allIds(store)).not.toContain(g1)
+      expect(allIds(store)).not.toContain(g2)
+      expect(wrapper.emitted('close')).toHaveLength(1)
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
 
       wrapper.unmount()
     })

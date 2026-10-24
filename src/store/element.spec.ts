@@ -93,6 +93,60 @@ function buildNestedGroups(store: Store): { inner: string; middle: string; outer
   return { inner, middle, outer }
 }
 
+interface FixtureIds {
+  g1: string
+  g2: string
+  inner: string
+  outer: string
+}
+
+/**
+ * Ungroup 用的文件，座標都不是 0，解散時座標換算錯了才看得出來：
+ *
+ * rootIds = [g1, m, g2, outer, z]
+ * - g1 (10, 20)  > a (0, 0)、b (30, 0)
+ * - g2 (100, 150) > c (0, 0)、d (30, 20)
+ * - outer (400, 400) > inner (0, 10) > p (0, 0)、q (30, 30)；outer > r (80, 0)
+ * - m、z：不在群組裡的一般元素
+ */
+function buildUngroupFixture(store: Store): FixtureIds {
+  store.addAll([
+    rect('a', { x: 10, y: 20 }),
+    rect('b', { x: 40, y: 20 }),
+    rect('m', { x: 300, y: 300 }),
+    rect('c', { x: 100, y: 150 }),
+    rect('d', { x: 130, y: 170 }),
+    rect('p', { x: 400, y: 410 }),
+    rect('q', { x: 430, y: 440 }),
+    rect('r', { x: 480, y: 400 }),
+    rect('z', { x: 600, y: 600 }),
+  ])
+  const g1 = store.group(['a', 'b'])
+  const g2 = store.group(['c', 'd'])
+  const inner = store.group(['p', 'q'])
+  const outer = store.group([inner, 'r'])
+  return { g1, g2, inner, outer }
+}
+
+/** 非群組元素在畫布上的絕對位置（沿 parent 鏈累加；fixture 的群組都沒有旋轉）。 */
+function leafWorldPositions(store: Store): Record<string, { x: number; y: number }> {
+  const result: Record<string, { x: number; y: number }> = {}
+  for (const el of Object.values(store.byId)) {
+    if (el.kind === ElementKind.Group) continue
+    let x = el.x
+    let y = el.y
+    let parentId = el.parentId
+    while (parentId) {
+      const parent = store.get(parentId)!
+      x += parent.x
+      y += parent.y
+      parentId = parent.parentId
+    }
+    result[el.id] = { x, y }
+  }
+  return result
+}
+
 describe('elementStore history', () => {
   let store: Store
 
@@ -528,6 +582,210 @@ describe('elementStore history', () => {
       expect(store.selectedIds.size).toBe(0)
       store.undo()
       expect(allIds(store)).toEqual(['a', 'b'])
+    })
+  })
+
+  describe('ungroupMany', () => {
+    it('多個群組一次解散只產生一筆 Undo；Undo 一次完整恢復，Redo 一次再次解散', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+      const before = content(store)
+      const worldBefore = leafWorldPositions(store)
+      const revision = store.documentRevision
+
+      store.ungroupMany([g1, g2])
+
+      expect(rootOrder(store)).toEqual(['a', 'b', 'm', 'c', 'd', outer, 'z'])
+      expect(store.get(g1)).toBeUndefined()
+      expect(store.get(g2)).toBeUndefined()
+      expect(['a', 'b', 'c', 'd'].map((id) => store.get(id)?.parentId)).toEqual([
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ])
+      // 子元素在畫布上的絕對位置不變。
+      expect(leafWorldPositions(store)).toEqual(worldBefore)
+      // 整批只遞增一次：自動存檔只會被觸發一次。
+      expect(store.documentRevision).toBe(revision + 1)
+      const after = content(store)
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(rootOrder(store)).toEqual([g1, 'm', g2, outer, 'z'])
+      expect(store.get(g1)?.childIds).toEqual(['a', 'b'])
+      expect(store.get(g2)?.childIds).toEqual(['c', 'd'])
+      expect(store.get('a')?.parentId).toBe(g1)
+      expect(store.get('d')?.parentId).toBe(g2)
+
+      store.redo()
+      expect(content(store)).toBe(after)
+
+      // addAll 一筆、group 四筆、ungroupMany 一筆。逐一解散的話會是 7。
+      expect(undoDepth(store)).toBe(6)
+    })
+
+    it('回傳被還原的子元素 id（依處理順序）；被解散的群組移出選取，其他選取保留', () => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      store.select(g2, true)
+      store.select('m', true)
+      store.select(g1, true)
+
+      const restored = store.ungroupMany([g2, g1])
+
+      expect(restored).toEqual(['c', 'd', 'a', 'b'])
+      expect([...store.selectedIds]).toEqual(['m'])
+    })
+
+    it('巢狀群組：只解散傳入的外層，內層群組保留並轉為絕對座標，Undo 完整恢復', () => {
+      const { inner, outer } = buildUngroupFixture(store)
+      const before = content(store)
+      const worldBefore = leafWorldPositions(store)
+
+      const restored = store.ungroupMany([outer])
+
+      expect(restored).toEqual([inner, 'r'])
+      expect(store.get(outer)).toBeUndefined()
+      expect(store.get(inner)?.parentId).toBeUndefined()
+      expect(store.get(inner)?.kind).toBe(ElementKind.Group)
+      expect({ x: store.get(inner)?.x, y: store.get(inner)?.y }).toEqual({ x: 400, y: 410 })
+      // 內層群組的子元素不動：仍掛在內層群組下，座標仍相對於內層群組。
+      expect(store.get(inner)?.childIds).toEqual(['p', 'q'])
+      expect(store.get('p')?.parentId).toBe(inner)
+      expect({ x: store.get('q')?.x, y: store.get('q')?.y }).toEqual({ x: 30, y: 30 })
+      expect(leafWorldPositions(store)).toEqual(worldBefore)
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(store.get(inner)?.parentId).toBe(outer)
+      expect(store.get(outer)?.childIds).toEqual([inner, 'r'])
+    })
+
+    it.each<[string, (ids: FixtureIds) => string[]]>([
+      ['空清單', () => []],
+      ['只有一般元素', () => ['m', 'z']],
+      ['不存在的 id', () => ['missing']],
+      ['不在 root 的群組（內層）', ({ inner }) => [inner]],
+    ])(
+      '沒有可解散的群組（%s）：不動 store、不遞增 documentRevision、不截斷 Redo',
+      (_label, pick) => {
+        const ids = buildUngroupFixture(store)
+        store.commitUpdate('m', { x: 999 })
+        store.undo()
+        const before = content(store)
+        const revision = store.documentRevision
+
+        expect(store.ungroupMany(pick(ids))).toEqual([])
+
+        expect(content(store)).toBe(before)
+        expect(store.documentRevision).toBe(revision)
+        // 原本可以 Redo 的那一步還在。
+        store.redo()
+        expect(store.get('m')?.x).toBe(999)
+      },
+    )
+
+    it.each<[string, (ids: FixtureIds) => string[]]>([
+      ['兩個獨立群組', ({ g1, g2 }) => [g1, g2]],
+      ['兩個獨立群組（相反順序）', ({ g1, g2 }) => [g2, g1]],
+      ['群組與一般元素混合', ({ g1, g2 }) => [g1, 'm', g2, 'z']],
+      ['重複與不存在的 id', ({ g1 }) => [g1, 'missing', g1]],
+      ['外層群組', ({ outer }) => [outer]],
+      ['外層與其他群組', ({ g1, outer }) => [outer, g1]],
+      ['祖先先於子孫', ({ inner, outer }) => [outer, inner]],
+      ['子孫先於祖先', ({ inner, outer }) => [inner, outer]],
+    ])('結果與逐一呼叫 ungroup 相同，只是整批一筆（%s）', (_label, pick) => {
+      const ids = buildUngroupFixture(store)
+      const selection = [ids.g1, 'm', ids.g2, ids.outer]
+      for (const id of selection) store.select(id, true)
+      const before = content(store)
+
+      // 另一個 store 載入相同的內容，逐一呼叫 ungroup 作為對照。
+      const reference = useElementStore(createPinia())
+      reference.loadSnapshot(store.snapshot())
+      for (const id of selection) reference.select(id, true)
+      const sequential = pick(ids).flatMap((id) => reference.ungroup(id))
+
+      const restored = store.ungroupMany(pick(ids))
+
+      expect(content(store)).toBe(content(reference))
+      expect([...store.selectedIds]).toEqual([...reference.selectedIds])
+      // 同一批裡也被解散的群組（祖先先於子孫時的子孫）不會出現在回傳值。
+      expect(restored).toEqual(sequential.filter((id) => reference.get(id) !== undefined))
+      // 不論傳入幾個群組，解散都只佔一筆：退一步就回到解散前。
+      store.undo()
+      expect(content(store)).toBe(before)
+    })
+
+    it('不修改解散前的 store 物件（history 裡的快照）', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+      const byIdBefore = store.byId
+      const childBefore = store.get('a')!
+      const rootElementsBefore = rootOrder(store)
+      const serialized = JSON.stringify(byIdBefore)
+
+      store.ungroupMany([g1, g2])
+
+      expect(JSON.stringify(byIdBefore)).toBe(serialized)
+      expect(childBefore.parentId).toBe(g1)
+      expect({ x: childBefore.x, y: childBefore.y }).toEqual({ x: 0, y: 0 })
+      expect(rootElementsBefore).toEqual([g1, 'm', g2, outer, 'z'])
+      // 子元素是新物件，不是在舊物件上改座標。
+      expect(store.get('a')).not.toBe(childBefore)
+    })
+
+    it('連續兩次 ungroupMany 是兩筆獨立的 Undo', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+
+      store.ungroupMany([g1, g2])
+      const afterFirst = content(store)
+      store.ungroupMany([outer])
+
+      store.undo()
+      expect(content(store)).toBe(afterFirst)
+      store.undo()
+      expect(store.get(g1)?.childIds).toEqual(['a', 'b'])
+      expect(store.get(g2)?.childIds).toEqual(['c', 'd'])
+    })
+
+    it('Undo 後執行 ungroupMany：原本的 Redo 被截斷，新的一筆可以正常 Undo / Redo', () => {
+      const { g1, g2 } = buildUngroupFixture(store)
+      store.commitUpdate('m', { x: 999 })
+      store.undo()
+      const before = content(store)
+
+      store.ungroupMany([g1, g2])
+      const after = content(store)
+
+      // 原本 Redo 回 x = 999 的那一筆已經不存在。
+      store.redo()
+      expect(content(store)).toBe(after)
+      store.undo()
+      expect(content(store)).toBe(before)
+      store.redo()
+      expect(content(store)).toBe(after)
+      expect(store.get('m')?.x).toBe(300)
+    })
+
+    it('單一群組的 ungroup 行為不變：回傳子元素、絕對座標、圖層位置、選取與一筆 Undo', () => {
+      const { g1, g2, outer } = buildUngroupFixture(store)
+      store.select(g1, true)
+      store.select('m', true)
+      const before = content(store)
+      const worldBefore = leafWorldPositions(store)
+
+      const restored = store.ungroup(g1)
+
+      expect(restored).toEqual(['a', 'b'])
+      expect(rootOrder(store)).toEqual(['a', 'b', 'm', g2, outer, 'z'])
+      expect(store.get('a')?.parentId).toBeUndefined()
+      expect({ x: store.get('b')?.x, y: store.get('b')?.y }).toEqual({ x: 40, y: 20 })
+      expect(leafWorldPositions(store)).toEqual(worldBefore)
+      expect([...store.selectedIds]).toEqual(['m'])
+
+      store.undo()
+      expect(content(store)).toBe(before)
+      // addAll 一筆、group 四筆。
+      expect(undoDepth(store)).toBe(5)
     })
   })
 
