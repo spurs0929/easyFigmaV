@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount } from '@vue/test-utils'
+import { useClipboardStore } from '@/store/clipboard'
 import { useElementStore } from '@/store/element'
 import { useCanvasActions } from '@/composables/useCanvasActions'
 import { useCanvasKeyboard } from '@/composables/useCanvasKeyboard'
@@ -459,6 +460,8 @@ describe('useCanvasActions.deleteSelected', () => {
         pointerWorld: () => ({ x: 0, y: 0 }),
         deleteSelected,
         duplicateSelected: vi.fn(),
+        copySelected: vi.fn(),
+        pasteClipboard: vi.fn(),
         groupSelected: vi.fn(),
         ungroupSelected: vi.fn(),
         onAltRelease: vi.fn(),
@@ -765,6 +768,8 @@ describe('useCanvasActions.ungroupSelected', () => {
         pointerWorld: () => ({ x: 0, y: 0 }),
         deleteSelected: vi.fn(),
         duplicateSelected: vi.fn(),
+        copySelected: vi.fn(),
+        pasteClipboard: vi.fn(),
         groupSelected: vi.fn(),
         ungroupSelected,
         onAltRelease: vi.fn(),
@@ -1150,6 +1155,8 @@ describe('useCanvasActions.duplicateSelected', () => {
         pointerWorld: () => ({ x: 0, y: 0 }),
         deleteSelected: vi.fn(),
         duplicateSelected,
+        copySelected: vi.fn(),
+        pasteClipboard: vi.fn(),
         groupSelected: vi.fn(),
         ungroupSelected: vi.fn(),
         onAltRelease: vi.fn(),
@@ -1216,6 +1223,397 @@ describe('useCanvasActions.duplicateSelected', () => {
       expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
 
       wrapper.unmount()
+    })
+  })
+})
+
+describe('useCanvasActions.copySelected / pasteClipboard', () => {
+  let pinia: Pinia
+  let store: Store
+  let clipboard: ReturnType<typeof useClipboardStore>
+  let copySelected: () => void
+  let pasteClipboard: () => void
+
+  beforeEach(() => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    store = useElementStore()
+    clipboard = useClipboardStore()
+    ;({ copySelected, pasteClipboard } = useCanvasActions())
+    // assertStoreIntegrity 發現不一致時只會 console.error。讓它直接丟出來，
+    // 每個測試都順帶驗證 byId / rootIds / parentId / childIds 的一致性。
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      throw new Error(`unexpected console.error: ${args.join(' ')}`)
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  function selected(): string[] {
+    return [...store.selectedIds]
+  }
+
+  function subtree(id: string): string[] {
+    const el = store.get(id)
+    if (!el) return []
+    return [id, ...el.childIds.flatMap(subtree)]
+  }
+
+  describe('Copy', () => {
+    it('不改文件、不產生 history、不觸發自動存檔、不改選取', () => {
+      const { outer } = buildUngroupFixture(store)
+      select(store, [outer, 'm'])
+      const before = content(store)
+      const revision = store.documentRevision
+
+      copySelected()
+
+      expect(content(store)).toBe(before)
+      expect(store.documentRevision).toBe(revision)
+      expect(selected()).toEqual([outer, 'm'])
+      // addAll、四次 group：Copy 沒有多出任何一筆
+      expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
+    })
+
+    it('Clipboard 的內容不參照文件裡的任何元素', () => {
+      const { outer } = buildUngroupFixture(store)
+      select(store, [outer])
+
+      copySelected()
+      const payload = clipboard.read()!
+
+      expect(payload.version).toBe(1)
+      expect(Object.keys(payload.elements.byId)).toHaveLength(5)
+      expect(Object.keys(payload.elements.byId).filter((id) => store.get(id))).toEqual([])
+    })
+
+    it('沒有選取：保留 Clipboard 原本的內容', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      copySelected()
+      const payload = clipboard.read()
+
+      store.clearSelection()
+      copySelected()
+
+      expect(clipboard.read()).toBe(payload)
+    })
+  })
+
+  describe('Paste', () => {
+    it('貼上一個複本：名稱加 copy、位移 (10, 10)、放在最上層並成為唯一的選取，一筆 Undo', () => {
+      store.addAll([rect('a', { x: 5, y: 7, rotation: 20 }), rect('b')])
+      select(store, ['a'])
+      copySelected()
+      const before = content(store)
+
+      pasteClipboard()
+      const [copy] = selected()
+
+      expect(rootOrder(store)).toEqual(['a', 'b', copy])
+      expect(store.get(copy)).toEqual({ ...store.get('a'), id: copy, name: 'a copy', x: 15, y: 17 })
+      store.undo()
+      expect(content(store)).toBe(before)
+    })
+
+    it('巢狀群組：貼上整棵子樹，刪除貼上的結果不影響原件', () => {
+      const { outer } = buildUngroupFixture(store)
+      const original = subtree(outer)
+      select(store, [outer])
+      copySelected()
+      const before = content(store)
+
+      pasteClipboard()
+      const pasted = subtree(selected()[0])
+
+      expect(pasted).toHaveLength(original.length)
+      expect(pasted.filter((id) => original.includes(id))).toEqual([])
+      store.removeMany([selected()[0]])
+      expect(content(store)).toBe(before)
+    })
+
+    it('重複貼上：每次都是全新的元素，第 n 次往右下錯開 n × (10, 10)', () => {
+      store.addAll([rect('a', { x: 100, y: 200 })])
+      select(store, ['a'])
+      copySelected()
+
+      const pastes: string[] = []
+      for (let i = 0; i < 3; i++) {
+        pasteClipboard()
+        pastes.push(selected()[0])
+      }
+
+      expect(new Set([...pastes, 'a']).size).toBe(4)
+      expect(pastes.map((id) => [store.get(id)!.x, store.get(id)!.y])).toEqual([
+        [110, 210],
+        [120, 220],
+        [130, 230],
+      ])
+      // addAll 一筆、三次貼上各一筆
+      expect(drainUndo(store)).toEqual({ effective: 4, empty: 0 })
+    })
+
+    it('多選：依原件的圖層順序貼上，與選取先後無關', () => {
+      store.addAll([rect('a'), rect('b'), rect('c')])
+      select(store, ['c', 'a'])
+      copySelected()
+
+      pasteClipboard()
+
+      expect(rootOrder(store).map((id) => store.get(id)!.name)).toEqual([
+        'a',
+        'b',
+        'c',
+        'a copy',
+        'c copy',
+      ])
+      expect(selected()).toHaveLength(2)
+    })
+
+    it('貼上的元素不與 Clipboard 共用物件：之後修改貼上的結果，再貼一次仍是複製時的內容', () => {
+      store.addAll([rect('a', { x: 0, fill: { type: 'solid', color: '#ff0000' } })])
+      select(store, ['a'])
+      copySelected()
+      pasteClipboard()
+      store.commitUpdate(selected()[0], { fill: { type: 'solid', color: '#00ff00' }, x: 999 })
+
+      pasteClipboard()
+
+      expect(store.get(selected()[0])).toMatchObject({ x: 20, fill: { color: '#ff0000' } })
+    })
+  })
+
+  describe('Clipboard 與原件、文件的生命週期', () => {
+    it('Copy 之後修改原件：貼上的是複製當時的內容', () => {
+      store.addAll([rect('a', { x: 0, name: 'before' })])
+      select(store, ['a'])
+      copySelected()
+      store.commitUpdate('a', { x: 500, name: 'after' })
+
+      pasteClipboard()
+
+      expect(store.get(selected()[0])).toMatchObject({ name: 'before copy', x: 10 })
+    })
+
+    it('Copy 之後刪除原件：仍然可以貼上', () => {
+      const { g1 } = buildUngroupFixture(store)
+      select(store, [g1])
+      copySelected()
+      store.removeMany([g1])
+
+      pasteClipboard()
+
+      expect(store.get(selected()[0])).toMatchObject({ name: 'Group copy', x: 20, y: 30 })
+      expect(subtree(selected()[0])).toHaveLength(3)
+    })
+
+    it('Copy 之後載入另一份文件（切換專案）：可以貼到新文件，Clipboard 保留', () => {
+      const { outer } = buildUngroupFixture(store)
+      select(store, [outer])
+      copySelected()
+      store.loadSnapshot({ byId: { x: rect('x') }, rootIds: ['x'] })
+
+      pasteClipboard()
+
+      expect(rootOrder(store)[0]).toBe('x')
+      expect(subtree(selected()[0])).toHaveLength(5)
+      expect(clipboard.read()).not.toBeNull()
+      // 新文件的 history：貼上一筆
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+
+    it('Clipboard 不進 document snapshot（存檔內容只有文件裡的元素）', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+
+      copySelected()
+
+      expect(Object.keys(store.snapshot().byId)).toEqual(['a'])
+    })
+  })
+
+  describe('Undo / Redo 不改變 Clipboard', () => {
+    it('Undo 貼上不清空 Clipboard，可以再貼；Redo 恢復的是同一批元素，不產生新的 Clipboard 內容', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      copySelected()
+      const payload = clipboard.read()
+
+      pasteClipboard()
+      const pasted = content(store)
+      store.undo()
+      expect(clipboard.read()).toBe(payload)
+      store.redo()
+      expect(content(store)).toBe(pasted)
+      expect(clipboard.read()).toBe(payload)
+
+      pasteClipboard()
+      // 第二次貼上：Undo / Redo 不影響貼上次數
+      expect(store.get(selected()[0])).toMatchObject({ x: 20, y: 20 })
+    })
+
+    it('Undo 之後貼上：原本的 Redo 失效，新的一筆可以正常 Undo / Redo', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      copySelected()
+      store.commitUpdate('a', { x: 50 })
+      store.undo()
+
+      pasteClipboard()
+      const after = content(store)
+      store.redo()
+
+      expect(content(store)).toBe(after)
+      expect(store.get('a')!.x).toBe(0)
+    })
+  })
+
+  describe('Clipboard 是空的', () => {
+    it('貼上不動文件、不增加 history、不增加 documentRevision、不改選取', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      const before = content(store)
+      const revision = store.documentRevision
+
+      pasteClipboard()
+
+      expect(content(store)).toBe(before)
+      expect(store.documentRevision).toBe(revision)
+      expect(selected()).toEqual(['a'])
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+
+    it('Undo 之後以空的 Clipboard 貼上：Redo 不被截斷', () => {
+      store.addAll([rect('a')])
+      store.commitUpdate('a', { x: 50 })
+      store.undo()
+
+      pasteClipboard()
+      store.redo()
+
+      expect(store.get('a')!.x).toBe(50)
+    })
+
+    it('清空之後貼上不做任何事', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      copySelected()
+      clipboard.clear()
+      const before = content(store)
+
+      pasteClipboard()
+
+      expect(content(store)).toBe(before)
+    })
+  })
+
+  describe('新的 Copy 取代舊內容', () => {
+    it('貼上的是最後一次複製的內容，錯開距離重新從 (10, 10) 算起', () => {
+      store.addAll([rect('a', { x: 0, y: 0 }), rect('b', { x: 300, y: 300 })])
+      select(store, ['a'])
+      copySelected()
+      pasteClipboard()
+      pasteClipboard()
+
+      select(store, ['b'])
+      copySelected()
+      pasteClipboard()
+
+      expect(store.get(selected()[0])).toMatchObject({ name: 'b copy', x: 310, y: 310 })
+    })
+  })
+
+  describe('鍵盤入口', () => {
+    function createKeyboard(gesture: GestureState = { kind: 'idle' }) {
+      return useCanvasKeyboard({
+        getGesture: () => gesture,
+        cancelPenGesture: vi.fn(),
+        cancelPencilGesture: vi.fn(),
+        finishPenGesture: vi.fn(),
+        refreshPenGesture: vi.fn(),
+        pointerWorld: () => ({ x: 0, y: 0 }),
+        deleteSelected: vi.fn(),
+        duplicateSelected: vi.fn(),
+        copySelected,
+        pasteClipboard,
+        groupSelected: vi.fn(),
+        ungroupSelected: vi.fn(),
+        onAltRelease: vi.fn(),
+      })
+    }
+
+    function key(k: string, modifier: KeyboardEventInit): KeyboardEvent {
+      return new KeyboardEvent('keydown', { key: k, cancelable: true, ...modifier })
+    }
+
+    it.each([
+      ['Ctrl', { ctrlKey: true }],
+      ['Cmd', { metaKey: true }],
+    ])('%s+C → %s+V：巢狀群組貼上是一筆 Undo，Copy 不佔 history', (_label, modifier) => {
+      const { outer } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [outer])
+      const keyboard = createKeyboard()
+
+      const copy = key('c', modifier)
+      keyboard.onKeydown(copy)
+      const paste = key('v', modifier)
+      keyboard.onKeydown(paste)
+
+      expect(copy.defaultPrevented).toBe(true)
+      expect(paste.defaultPrevented).toBe(true)
+      expect(subtree(selected()[0])).toHaveLength(5)
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
+    })
+
+    it('拖曳中按 Ctrl+V：不貼上（U3A 的守衛）；放開後才貼上', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      copySelected()
+      const before = content(store)
+      let gesture: GestureState = { kind: 'dragging' } as unknown as GestureState
+      const keyboard = useCanvasKeyboard({
+        getGesture: () => gesture,
+        cancelPenGesture: vi.fn(),
+        cancelPencilGesture: vi.fn(),
+        finishPenGesture: vi.fn(),
+        refreshPenGesture: vi.fn(),
+        pointerWorld: () => ({ x: 0, y: 0 }),
+        deleteSelected: vi.fn(),
+        duplicateSelected: vi.fn(),
+        copySelected,
+        pasteClipboard,
+        groupSelected: vi.fn(),
+        ungroupSelected: vi.fn(),
+        onAltRelease: vi.fn(),
+      })
+
+      const blocked = key('v', { ctrlKey: true })
+      keyboard.onKeydown(blocked)
+      expect(blocked.defaultPrevented).toBe(true)
+      expect(content(store)).toBe(before)
+
+      gesture = { kind: 'idle' }
+      keyboard.onKeydown(key('v', { ctrlKey: true }))
+      expect(allIds(store)).toHaveLength(2)
+    })
+
+    it('拖曳中按 Ctrl+C：照常寫入 Clipboard，不改文件', () => {
+      store.addAll([rect('a')])
+      select(store, ['a'])
+      const before = content(store)
+
+      createKeyboard({ kind: 'dragging' } as unknown as GestureState).onKeydown(
+        key('c', { ctrlKey: true }),
+      )
+
+      expect(clipboard.read()).not.toBeNull()
+      expect(content(store)).toBe(before)
     })
   })
 })

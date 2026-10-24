@@ -135,6 +135,8 @@ function createKeyboard(initial: GestureState = { kind: 'idle' }) {
     refreshPenGesture: vi.fn(),
     deleteSelected: vi.fn(),
     duplicateSelected: vi.fn(),
+    copySelected: vi.fn(),
+    pasteClipboard: vi.fn(),
     groupSelected: vi.fn(),
     ungroupSelected: vi.fn(),
     onAltRelease: vi.fn(),
@@ -381,7 +383,14 @@ describe('useCanvasKeyboard：Undo / Redo 與進行中的手勢', () => {
 
 // ── 會改文件的其他快捷鍵（Undo / Redo 以外）────────────────────────────────────
 
-type DocumentAction = 'delete' | 'duplicate' | 'group' | 'ungroup' | 'bringToFront' | 'sendToBack'
+type DocumentAction =
+  | 'delete'
+  | 'duplicate'
+  | 'paste'
+  | 'group'
+  | 'ungroup'
+  | 'bringToFront'
+  | 'sendToBack'
 
 interface DocumentShortcut {
   label: string
@@ -395,6 +404,8 @@ const DOCUMENT_SHORTCUTS: DocumentShortcut[] = [
   { label: 'Backspace', init: { key: 'Backspace' }, action: 'delete' },
   { label: 'Ctrl+D', init: { key: 'd', ctrlKey: true }, action: 'duplicate' },
   { label: 'Cmd+D', init: { key: 'd', metaKey: true }, action: 'duplicate' },
+  { label: 'Ctrl+V', init: { key: 'v', ctrlKey: true }, action: 'paste' },
+  { label: 'Cmd+V', init: { key: 'v', metaKey: true }, action: 'paste' },
   { label: 'Ctrl+G', init: { key: 'g', ctrlKey: true }, action: 'group' },
   { label: 'Cmd+G', init: { key: 'g', metaKey: true }, action: 'group' },
   { label: 'Ctrl+Shift+G', init: { key: 'G', ctrlKey: true, shiftKey: true }, action: 'ungroup' },
@@ -429,6 +440,8 @@ describe('useCanvasKeyboard：刪除、複製、群組、圖層順序與進行�
     return {
       delete: spies.deleteSelected,
       duplicate: spies.duplicateSelected,
+      paste: spies.pasteClipboard,
+      copy: spies.copySelected,
       group: spies.groupSelected,
       ungroup: spies.ungroupSelected,
       bringToFront: vi.spyOn(store, 'bringToFront'),
@@ -536,5 +549,115 @@ describe('useCanvasKeyboard：刪除、複製、群組、圖層順序與進行�
       expect(event.defaultPrevented).toBe(false)
       for (const spy of Object.values(actions)) expect(spy).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('useCanvasKeyboard：Ctrl/Cmd+C', () => {
+  let store: Store
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useElementStore()
+    store.add(rect('a'))
+    store.select('a')
+  })
+
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges()
+    document.body.innerHTML = ''
+  })
+
+  const COPY_SHORTCUTS = [
+    { label: 'Ctrl+C', init: { key: 'c', ctrlKey: true } },
+    { label: 'Cmd+C', init: { key: 'c', metaKey: true } },
+  ]
+
+  /** 在頁面上反白一段文字（例如留言內容）。 */
+  function selectPageText(): void {
+    const p = document.createElement('p')
+    p.textContent = '留言內容'
+    document.body.appendChild(p)
+    const range = document.createRange()
+    range.selectNodeContents(p)
+    window.getSelection()!.addRange(range)
+  }
+
+  it.each(COPY_SHORTCUTS)('idle 時 $label 呼叫 copySelected，並擋下瀏覽器預設行為', (s) => {
+    const { press, spies } = createKeyboard()
+
+    const event = press(s.init)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(spies.copySelected).toHaveBeenCalledTimes(1)
+    expect(spies.pasteClipboard).not.toHaveBeenCalled()
+    expect(spies.duplicateSelected).not.toHaveBeenCalled()
+  })
+
+  it.each(ACTIVE_KINDS)('%s 中按 Ctrl+C：只寫 Clipboard、不改文件，照常可用', (kind) => {
+    const { press, spies } = createKeyboard(ACTIVE_GESTURES[kind]())
+    const revision = store.documentRevision
+
+    const event = press({ key: 'c', ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(spies.copySelected).toHaveBeenCalledTimes(1)
+    expect(store.documentRevision).toBe(revision)
+  })
+
+  it.each(COPY_SHORTCUTS)('頁面上有反白的文字：$label 交給瀏覽器複製文字', (s) => {
+    selectPageText()
+    const { press, spies } = createKeyboard()
+
+    const event = press(s.init)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(spies.copySelected).not.toHaveBeenCalled()
+  })
+
+  it('反白的範圍是空的（只有游標）：照常複製畫布上的元素', () => {
+    const p = document.createElement('p')
+    p.textContent = '留言內容'
+    document.body.appendChild(p)
+    const range = document.createRange()
+    range.setStart(p.firstChild!, 1)
+    range.collapse(true)
+    window.getSelection()!.addRange(range)
+    const { press, spies } = createKeyboard()
+
+    const event = press({ key: 'c', ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(spies.copySelected).toHaveBeenCalledTimes(1)
+  })
+
+  it('反白文字只影響 Ctrl+C：Ctrl+V 照常貼上', () => {
+    selectPageText()
+    const { press, spies } = createKeyboard()
+
+    const event = press({ key: 'v', ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(spies.pasteClipboard).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(COPY_SHORTCUTS)('輸入框聚焦時 $label 交給輸入框', (s) => {
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    const { press, spies } = createKeyboard()
+
+    const event = press(s.init)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(spies.copySelected).not.toHaveBeenCalled()
+  })
+
+  it('Shift+Ctrl+C 不是複製', () => {
+    const { press, spies } = createKeyboard()
+
+    const event = press({ key: 'C', ctrlKey: true, shiftKey: true })
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(spies.copySelected).not.toHaveBeenCalled()
   })
 })

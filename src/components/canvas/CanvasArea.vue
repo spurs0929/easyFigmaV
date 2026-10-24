@@ -56,7 +56,14 @@ const commentStore = useCommentStore()
 const presenceStore = usePresenceStore()
 
 // ── Composables ────────────────────────────────────────────────────────────────
-const { deleteSelected, groupSelected, ungroupSelected, duplicateSelected } = useCanvasActions()
+const {
+  deleteSelected,
+  groupSelected,
+  ungroupSelected,
+  duplicateSelected,
+  copySelected,
+  pasteClipboard,
+} = useCanvasActions()
 
 const { contextMenu, onContainerContextMenu, closeContextMenu } = useContextMenu(() => stage)
 
@@ -69,6 +76,8 @@ const keyboard = useCanvasKeyboard({
   pointerWorld,
   deleteSelected,
   duplicateSelected,
+  copySelected,
+  pasteClipboard,
   groupSelected,
   ungroupSelected,
   onAltRelease: () => {

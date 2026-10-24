@@ -13,6 +13,8 @@ export interface CanvasKeyboardOptions {
   pointerWorld: () => Point
   deleteSelected: () => void
   duplicateSelected: () => void
+  copySelected: () => void
+  pasteClipboard: () => void
   groupSelected: () => void
   ungroupSelected: () => void
   /** Alt 放開後需要重繪 measurement overlay，由 CanvasArea.vue 提供。 */
@@ -29,7 +31,7 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
   }
 
   /**
-   * 手勢進行中不可執行任何會改文件的快捷鍵（Undo / Redo、刪除、複製、群組、圖層順序）。
+   * 手勢進行中不可執行任何會改文件的快捷鍵（Undo / Redo、刪除、複製、貼上、群組、圖層順序）。
    *
    * 拖曳、縮放進行到一半時，store 已經被改動但還沒推快照；繪製、Pen、Pencil 的草稿
    * 則還在 store 之外。這時再改文件，手勢卻會繼續：
@@ -60,7 +62,16 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
   interface KeyCommand {
     /** true：會改文件，手勢進行中忽略（見 canModifyDocument）。新增快捷鍵時必須表態。 */
     modifiesDocument: boolean
+    /**
+     * true：頁面上有反白的文字時整個交給瀏覽器（不執行、不 preventDefault）。
+     * 用於 Ctrl/Cmd+C：使用者反白留言等文字再複製時，要的是那段文字，不是畫布上的元素。
+     */
+    yieldsToTextSelection?: boolean
     run: () => void
+  }
+
+  function hasTextSelection(): boolean {
+    return (window.getSelection()?.toString() ?? '') !== ''
   }
 
   // 每一個快捷鍵都會 preventDefault（由 onKeydown 統一處理），包含被忽略的時候。
@@ -71,6 +82,12 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
     ['ctrl+y', { modifiesDocument: true, run: () => elementStore.redo() }],
     ['ctrl+shift+z', { modifiesDocument: true, run: () => elementStore.redo() }],
     ['ctrl+d', { modifiesDocument: true, run: () => opts.duplicateSelected() }],
+    // Copy 只寫 Clipboard，不改文件：手勢中照常可用。Paste 會改文件。
+    [
+      'ctrl+c',
+      { modifiesDocument: false, yieldsToTextSelection: true, run: () => opts.copySelected() },
+    ],
+    ['ctrl+v', { modifiesDocument: true, run: () => opts.pasteClipboard() }],
     ['ctrl+g', { modifiesDocument: true, run: () => opts.groupSelected() }],
     ['ctrl+shift+g', { modifiesDocument: true, run: () => opts.ungroupSelected() }],
     // 只改選取，不改文件：手勢中照常可用。
@@ -141,6 +158,7 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
     if (isTypingTarget(getDeepActiveElement())) return
     const command = _keyCommands.get(keyCombo(e))
     if (!command) return
+    if (command.yieldsToTextSelection && hasTextSelection()) return
     e.preventDefault()
     if (command.modifiesDocument && !canModifyDocument()) return
     command.run()
