@@ -1026,4 +1026,272 @@ describe('elementStore history', () => {
       expect(content(store)).toBe(latest)
     })
   })
+  describe('checkpoint / restoreIfUnchanged（拖曳、縮放回到原狀，U3C）', () => {
+    /** 模擬一次手勢：記下 checkpoint，做一連串 update，結束時照 CanvasArea 的順序收尾。 */
+    function gesture(steps: () => void): boolean {
+      const cp = store.checkpoint()
+      steps()
+      const restored = store.restoreIfUnchanged(cp)
+      store.pushSnapshot()
+      return restored
+    }
+
+    it('拖出去再拖回原位：不新增 History', () => {
+      store.add(rect('a', { x: 10, y: 20 }))
+
+      const restored = gesture(() => {
+        store.update('a', { x: 60, y: 90 })
+        store.update('a', { x: 10, y: 20 })
+      })
+
+      expect(restored).toBe(true)
+      expect(undoDepth(store)).toBe(1)
+    })
+
+    it('拖回原位不清掉 Redo', () => {
+      store.add(rect('a'))
+      store.add(rect('b'))
+      store.undo()
+
+      gesture(() => {
+        store.update('a', { x: 50 })
+        store.update('a', { x: 0 })
+      })
+
+      expect(drainRedo(store)).toEqual({ effective: 1, empty: 0 })
+      expect(allIds(store)).toEqual(['a', 'b'])
+    })
+
+    it('縮放回原尺寸：不新增 History', () => {
+      store.add(rect('a', { x: 5, y: 5, width: 40, height: 30 }))
+
+      const restored = gesture(() => {
+        store.update('a', { x: 5, y: 5, width: 80, height: 70 })
+        store.update('a', { x: 5, y: 5, width: 40, height: 30 })
+      })
+
+      expect(restored).toBe(true)
+      expect(undoDepth(store)).toBe(1)
+    })
+
+    it('多個元素都拖回原位：不新增 History', () => {
+      store.addAll([rect('a', { x: 0 }), rect('b', { x: 100 })])
+
+      const restored = gesture(() => {
+        store.update('a', { x: 30 })
+        store.update('b', { x: 130 })
+        store.update('a', { x: 0 })
+        store.update('b', { x: 100 })
+      })
+
+      expect(restored).toBe(true)
+      expect(undoDepth(store)).toBe(1)
+    })
+
+    it('換回後 store 就是記下的那個物件：之後重複 pushSnapshot 也不會多出空白 History', () => {
+      store.add(rect('a'))
+
+      gesture(() => {
+        store.update('a', { x: 50 })
+        store.update('a', { x: 0 })
+      })
+      // 像是之後的純點擊：按下、沒移動就放開，只會 pushSnapshot。
+      store.pushSnapshot()
+      store.pushSnapshot()
+
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+
+    it('換回不遞增 documentRevision，內容與 checkpoint 相同', () => {
+      store.add(rect('a', { x: 7 }))
+      const before = content(store)
+      const cp = store.checkpoint()
+      store.update('a', { x: 70 })
+      store.update('a', { x: 7 })
+      const revision = store.documentRevision
+
+      expect(store.restoreIfUnchanged(cp)).toBe(true)
+      expect(store.documentRevision).toBe(revision)
+      expect(content(store)).toBe(before)
+    })
+
+    it('完全沒有 update：回傳 true，store 不變、不新增 History', () => {
+      store.add(rect('a'))
+      const revision = store.documentRevision
+
+      expect(gesture(() => {})).toBe(true)
+      expect(store.documentRevision).toBe(revision)
+      expect(undoDepth(store)).toBe(1)
+    })
+
+    it('真的移動了：回傳 false，保留移動後的內容並新增一筆 History', () => {
+      store.add(rect('a'))
+
+      const restored = gesture(() => {
+        store.update('a', { x: 50 })
+        store.update('a', { x: 40 })
+      })
+
+      expect(restored).toBe(false)
+      expect(store.get('a')!.x).toBe(40)
+      expect(drainUndo(store)).toEqual({ effective: 2, empty: 0 })
+    })
+
+    it('只差 1 個單位也算變更', () => {
+      store.add(rect('a', { y: 10 }))
+
+      const restored = gesture(() => {
+        store.update('a', { y: 11 })
+      })
+
+      expect(restored).toBe(false)
+      expect(undoDepth(store)).toBe(2)
+    })
+
+    it('多個元素只有一個回到原位：回傳 false，新增一筆 History', () => {
+      store.addAll([rect('a', { x: 0 }), rect('b', { x: 100 })])
+
+      const restored = gesture(() => {
+        store.update('a', { x: 30 })
+        store.update('b', { x: 130 })
+        store.update('a', { x: 0 })
+      })
+
+      expect(restored).toBe(false)
+      expect(store.get('b')!.x).toBe(130)
+      expect(undoDepth(store)).toBe(2)
+    })
+
+    it('位置回到原位但尺寸改了：回傳 false', () => {
+      store.add(rect('a', { width: 10 }))
+
+      const restored = gesture(() => {
+        store.update('a', { x: 50, width: 20 })
+        store.update('a', { x: 0 })
+      })
+
+      expect(restored).toBe(false)
+      expect(store.get('a')!.width).toBe(20)
+      expect(undoDepth(store)).toBe(2)
+    })
+
+    it('判定為已變更時不動 store：內容與 documentRevision 都維持', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.update('a', { x: 50 })
+      const after = content(store)
+      const revision = store.documentRevision
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      expect(content(store)).toBe(after)
+      expect(store.documentRevision).toBe(revision)
+    })
+
+    it('記下後新增了元素：回傳 false', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.add(rect('b'))
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      expect(allIds(store)).toEqual(['a', 'b'])
+    })
+
+    it('記下後刪除了元素：回傳 false', () => {
+      store.addAll([rect('a'), rect('b')])
+      const cp = store.checkpoint()
+      store.remove('b')
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      expect(allIds(store)).toEqual(['a'])
+    })
+
+    it('記下後刪一個、加一個（元素數量相同、id 不同）：回傳 false', () => {
+      store.addAll([rect('a'), rect('b')])
+      const cp = store.checkpoint()
+      store.remove('b')
+      store.add(rect('c'))
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      expect(allIds(store)).toEqual(['a', 'c'])
+    })
+
+    it('記下後改了圖層順序：回傳 false', () => {
+      store.addAll([rect('a'), rect('b')])
+      const cp = store.checkpoint()
+      store.bringToFront('a')
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      expect(rootOrder(store)).toEqual(['b', 'a'])
+    })
+
+    it('圖層順序改了又改回：rootIds 是新陣列但順序相同，回傳 true', () => {
+      store.addAll([rect('a'), rect('b')])
+      const cp = store.checkpoint()
+      store.bringToFront('a')
+      store.sendToBack('a')
+
+      expect(store.restoreIfUnchanged(cp)).toBe(true)
+      expect(rootOrder(store)).toEqual(['a', 'b'])
+    })
+
+    it('群組內子元素回到原位：回傳 true', () => {
+      store.addAll([rect('a', { x: 0 }), rect('b', { x: 50 })])
+      const groupId = store.group(['a', 'b'])
+      const [childId] = store.get(groupId)!.childIds
+      const original = store.get(childId)!.x
+
+      const restored = gesture(() => {
+        store.update(childId, { x: original + 25 })
+        store.update(childId, { x: original })
+      })
+
+      expect(restored).toBe(true)
+      expect(undoDepth(store)).toBe(2)
+    })
+
+    it('物件屬性換成內容相同的新物件：只比一層，保守地判定為已變更', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.update('a', { fill: { type: 'solid', color: '#ffffff' } })
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+    })
+
+    it('新增了原本沒有的屬性（即使值是 undefined）：保守地判定為已變更', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.update('a', { componentId: undefined })
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+    })
+
+    it('記下時已有未推入 History 的變更：拖回原位後仍只推一筆（那筆既有變更）', () => {
+      store.add(rect('a'))
+      store.update('a', { x: 5 }) // 沒有 pushSnapshot 的變更
+
+      const restored = gesture(() => {
+        store.update('a', { x: 50 })
+        store.update('a', { x: 5 })
+      })
+
+      expect(restored).toBe(true)
+      expect(store.get('a')!.x).toBe(5)
+      expect(drainUndo(store)).toEqual({ effective: 2, empty: 0 })
+    })
+
+    it('Undo 之後記下、拖回原位：Undo 後的位置不變、Redo 保留', () => {
+      store.add(rect('a'))
+      store.commitUpdate('a', { x: 30 })
+      store.undo()
+
+      gesture(() => {
+        store.update('a', { x: 80 })
+        store.update('a', { x: 0 })
+      })
+
+      expect(store.get('a')!.x).toBe(0)
+      expect(drainRedo(store)).toEqual({ effective: 1, empty: 0 })
+      expect(store.get('a')!.x).toBe(30)
+    })
+  })
 })

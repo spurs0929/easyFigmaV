@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import type Konva from 'konva'
-import { useElementStore } from '@/store/element'
+import { useElementStore, type ElementStoreCheckpoint } from '@/store/element'
 import { useCanvasKeyboard } from '@/composables/useCanvasKeyboard'
 import { ELEMENT_HISTORY_MAX, ElementKind, type CanvasElement } from '@/types/element'
 import type { GestureState } from '@/types/canvas'
@@ -55,6 +55,7 @@ function drain(store: Store, step: () => void): number {
 // 手勢裡的 Konva 物件只會被 CanvasArea 使用，鍵盤這一層不會碰到，測試用空物件代替。
 const konvaShape = {} as Konva.Shape
 const konvaRect = {} as Konva.Rect
+const checkpoint = {} as ElementStoreCheckpoint
 const konvaGroup = {} as Konva.Group
 
 function penGesture(pointCount: number, patch: Partial<PenGesture> = {}): PenGesture {
@@ -79,12 +80,14 @@ const ACTIVE_GESTURES: Record<Exclude<GestureState['kind'], 'idle'>, () => Gestu
     kind: 'dragging',
     startWorld: { x: 0, y: 0 },
     starts: [{ id: 'a', x: 0, y: 0 }],
+    checkpoint,
   }),
   resizing: () => ({
     kind: 'resizing',
     id: 'a',
     handle: 'br',
     origin: { x: 0, y: 0, width: 10, height: 10 },
+    checkpoint,
   }),
   marquee: () => ({ kind: 'marquee', start: { x: 0, y: 0 }, rect: konvaRect }),
   drawing: () => ({

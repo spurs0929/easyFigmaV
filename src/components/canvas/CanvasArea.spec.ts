@@ -389,6 +389,202 @@ describe('CanvasArea：縮放的 mouseup', () => {
   })
 })
 
+// ── 拖曳 / 縮放回到原狀（U3C）────────────────────────────────────────────────
+
+describe('CanvasArea：拖曳回到原位不產生 History（U3C）', () => {
+  it('拖出去再拖回原位、在畫布上放開：位置不變、不新增 History', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(300, 260)
+    move(150, 150)
+    releaseOnStage(150, 150)
+
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('拖回原位不清掉 Redo：之後 Ctrl+Shift+Z 仍能重做上一次拖曳', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    pressUndo()
+    await nextTick()
+
+    press(150, 150)
+    move(400, 400)
+    move(150, 150)
+    releaseOnStage(150, 150)
+
+    pressRedo()
+    expect(box(store, 'a')).toMatchObject({ x: 120, y: 130 })
+  })
+
+  it('拖回原位後 Ctrl+Z：直接 Undo 上一次真正的拖曳', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    await nextTick()
+
+    press(170, 180)
+    move(300, 300)
+    move(170, 180)
+    releaseOnStage(170, 180)
+
+    expect(undoDepth(store)).toBe(1)
+    pressUndo()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+  })
+
+  it('拖回原位之後再純點擊：仍不新增空白 History', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(300, 260)
+    move(150, 150)
+    releaseOnStage(150, 150)
+    await nextTick()
+    press(150, 150)
+    releaseOnStage(150, 150)
+
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('拖回原位後在畫布外放開：不新增 History', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(400, 300)
+    move(150, 150)
+    leave(-5, 150)
+    releaseOutside(-100, 150)
+
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('拖回原位、mouseup 遺失（回到畫布的 mousemove 發現已放開）：不新增 History', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(400, 300)
+    move(150, 150)
+    hover(500, 500)
+
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('多選拖出去再拖回原位：不新增 History', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    store.select('a')
+    store.select('b', true)
+    await nextTick()
+
+    press(150, 150)
+    move(220, 260)
+    move(150, 150)
+    releaseOnStage(150, 150)
+
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(box(store, 'b')).toMatchObject({ x: 300, y: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('群組拖出去再拖回原位：不新增 History', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 250 })])
+    const groupId = store.group(['a', 'b'])
+    await nextTick()
+    const before = box(store, groupId)
+
+    press(150, 150)
+    move(260, 330)
+    move(150, 150)
+    releaseOnStage(150, 150)
+
+    expect(box(store, groupId)).toEqual(before)
+    // 只有建立群組那一筆。
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('沒有回到原位（差 1px）：仍建立一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+
+    press(150, 150)
+    move(300, 260)
+    move(151, 150)
+    releaseOnStage(151, 150)
+
+    expect(box(store, 'a')).toMatchObject({ x: 101, y: 100 })
+    expect(undoDepth(store)).toBe(1)
+  })
+})
+
+describe('CanvasArea：縮放回到原尺寸不產生 History（U3C）', () => {
+  it('拉大再拉回原尺寸、在畫布上放開：尺寸不變、不新增 History', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(200, 200) // 右下角把手
+    move(280, 260)
+    move(200, 200)
+    releaseOnStage(200, 200)
+
+    expect(box(store, 'a')).toEqual({ x: 100, y: 100, width: 100, height: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('縮放回原尺寸不清掉 Redo', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(200, 200)
+    move(260, 250)
+    releaseOnStage(260, 250)
+    pressUndo()
+    await selectAndRender(store, 'a')
+
+    press(200, 200)
+    move(300, 300)
+    move(200, 200)
+    releaseOnStage(200, 200)
+
+    pressRedo()
+    expect(box(store, 'a')).toEqual({ x: 100, y: 100, width: 160, height: 150 })
+  })
+
+  it('縮放回原尺寸後在畫布外放開：不新增 History', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(200, 200)
+    move(300, 590)
+    move(200, 200)
+    leave(200, 605)
+    releaseOutside(200, 900)
+
+    expect(box(store, 'a')).toEqual({ x: 100, y: 100, width: 100, height: 100 })
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('沒有回到原尺寸：仍建立一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(200, 200)
+    move(300, 300)
+    move(200, 201)
+    releaseOnStage(200, 201)
+
+    expect(box(store, 'a')).toEqual({ x: 100, y: 100, width: 100, height: 101 })
+    expect(undoDepth(store)).toBe(1)
+  })
+})
+
 // ── Panning ──────────────────────────────────────────────────────────────────
 
 describe('CanvasArea：平移的 mouseup', () => {

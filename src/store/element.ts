@@ -15,6 +15,44 @@ import {
   GROUP_DEFAULT_NAME,
 } from '@/types/element'
 
+declare const checkpointBrand: unique symbol
+
+/**
+ * elementStore.checkpoint() 的回傳值。刻意做成不透明的型別：呼叫端只能保存它、
+ * 原封不動交回 restoreIfUnchanged，不能讀取或修改裡面的文件內容。
+ */
+export type ElementStoreCheckpoint = { readonly [checkpointBrand]: true }
+
+/** 兩個值相同：物件先 toRaw 再比參考，避免 reactive proxy 與原始物件被當成不同。 */
+function _sameValue(a: unknown, b: unknown): boolean {
+  return toRaw(a) === toRaw(b)
+}
+
+/** 兩個元素的自身屬性集合相同，且每個屬性值都相同（只比一層）。 */
+function _isShallowEqualElement(a: CanvasElement, b: CanvasElement): boolean {
+  const rawA = toRaw(a) as unknown as Record<string, unknown>
+  const rawB = toRaw(b) as unknown as Record<string, unknown>
+  if (rawA === rawB) return true
+  const keys = Object.keys(rawA)
+  if (keys.length !== Object.keys(rawB).length) return false
+  return keys.every((key) => Object.hasOwn(rawB, key) && _sameValue(rawA[key], rawB[key]))
+}
+
+/** 兩個 store 內容相同（判斷方式見 restoreIfUnchanged）。 */
+function _isShallowEquivalent(a: ElementStore, b: ElementStore): boolean {
+  if (!_sameValue(a.rootIds, b.rootIds)) {
+    if (a.rootIds.length !== b.rootIds.length) return false
+    if (!a.rootIds.every((id, i) => id === b.rootIds[i])) return false
+  }
+  if (_sameValue(a.byId, b.byId)) return true
+  const ids = Object.keys(a.byId)
+  if (ids.length !== Object.keys(b.byId).length) return false
+  return ids.every((id) => {
+    const elB = Object.hasOwn(b.byId, id) ? b.byId[id] : undefined
+    return elB !== undefined && _isShallowEqualElement(a.byId[id], elB)
+  })
+}
+
 export const useElementStore = defineStore('element', () => {
   // ── State ──────────────────────────────────────────────────────────────────
 
@@ -504,6 +542,43 @@ export const useElementStore = defineStore('element', () => {
     _touchDocument()
   }
 
+  // ── Checkpoint ─────────────────────────────────────────────────────────────
+
+  /**
+   * 記下目前的 store 物件，供手勢結束時用 restoreIfUnchanged 判斷「有沒有真的改過」。
+   *
+   * 回傳的是 store 物件本身（不是拷貝）：store 物件不可變，之後的變更都會換成新物件，
+   * 所以它會一直代表記下當時的文件。呼叫端只能把它原封不動傳回 restoreIfUnchanged。
+   */
+  function checkpoint(): ElementStoreCheckpoint {
+    return toRaw(_store.value) as unknown as ElementStoreCheckpoint
+  }
+
+  /**
+   * 若目前的 store 與 checkpoint 內容相同，就把 store 換回 checkpoint 那個物件並回傳 true；
+   * 否則什麼都不做並回傳 false。
+   *
+   * 用途：拖曳 / 縮放過程用 update() 高頻寫入，每次都會換成新的 store 物件。拖出去再拖回
+   * 原位時內容已經一樣，參考卻不同，_pushSnapshot 的參考去重擋不到，會多推一筆空的 undo、
+   * 清掉 redo。換回原本的物件之後，參考去重就能照常擋下。
+   *
+   * 比較方式是淺層的，不是整份文件的深度比較：
+   * • 沒被改過的元素，update() 會沿用同一個物件，只比參考。
+   * • 參考不同的元素逐一比較自身屬性，屬性值也只比參考（陣列、物件不往下展開）。
+   * 只要有任何一處不同就視為已變更。這可能把「內容其實相同」誤判成已變更（只會多一筆
+   * history，與修改前相同），但不會把真的有變更的狀態換掉。
+   *
+   * 不呼叫 _touchDocument：換回的內容與目前完全相同，畫面與存檔內容都不會因此改變。
+   */
+  function restoreIfUnchanged(cp: ElementStoreCheckpoint): boolean {
+    const base = cp as unknown as ElementStore
+    const current = toRaw(_store.value)
+    if (current === base) return true
+    if (!_isShallowEquivalent(base, current)) return false
+    _store.value = base
+    return true
+  }
+
   // ── Undo / Redo ────────────────────────────────────────────────────────────
 
   function _pushSnapshot(): void {
@@ -624,6 +699,8 @@ export const useElementStore = defineStore('element', () => {
     undo,
     redo,
     pushSnapshot: _pushSnapshot,
+    checkpoint,
+    restoreIfUnchanged,
     // Selection
     select,
     selectAll,

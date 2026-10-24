@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, watchEffect, onMounted, onUnmounted, nextTick } from 'vue'
 import Konva from 'konva'
-import { useElementStore } from '@/store/element'
+import { useElementStore, type ElementStoreCheckpoint } from '@/store/element'
 import { useViewportStore } from '@/store/viewport'
 import { useToolStore } from '@/store/tool'
 import {
@@ -504,6 +504,7 @@ function startResizeGesture(id: string, handle: SelectionCornerHandle): void {
     id,
     handle,
     origin: { x: el.x, y: el.y, width: el.width, height: el.height },
+    checkpoint: elementStore.checkpoint(),
   }
 }
 
@@ -1114,7 +1115,7 @@ function startDragging(e: Konva.KonvaEventObject<MouseEvent>, world: Point): voi
     return { id, x: elem.x, y: elem.y }
   })
   _isDragging = true
-  _gesture = { kind: 'dragging', startWorld: world, starts }
+  _gesture = { kind: 'dragging', startWorld: world, starts, checkpoint: elementStore.checkpoint() }
 }
 
 function startMarquee(world: Point): void {
@@ -1253,6 +1254,18 @@ function onMouseMove(): void {
 }
 
 /**
+ * 拖曳 / 縮放結束時寫入 History。
+ *
+ * 過程中每次移動都用 update() 換成新的 store 物件；拖出去再拖回原位（縮放回原尺寸）時，
+ * 內容與按下時相同、參考卻不同，直接 pushSnapshot 會多一筆空白 History 並清掉 Redo。
+ * 先把 store 換回按下時的物件，pushSnapshot 的參考去重就會擋下。
+ */
+function commitGestureHistory(checkpoint: ElementStoreCheckpoint): void {
+  elementStore.restoreIfUnchanged(checkpoint)
+  elementStore.pushSnapshot()
+}
+
+/**
  * 結束這次按壓的手勢。
  *
  * releasedOnStage = false 表示 Stage 沒收到這次 mouseup（見 onWindowMouseUp）。這時不讀
@@ -1271,7 +1284,7 @@ function onMouseUp(releasedOnStage: boolean): void {
   }
 
   if (g.kind === 'dragging') {
-    if (g.starts.length > 0) elementStore.pushSnapshot()
+    if (g.starts.length > 0) commitGestureHistory(g.checkpoint)
     _isDragging = false
     _gesture = { kind: 'idle' }
     // 拖曳結束：清除吸附線，退回純尺寸標籤
@@ -1280,7 +1293,7 @@ function onMouseUp(releasedOnStage: boolean): void {
   }
 
   if (g.kind === 'resizing') {
-    elementStore.pushSnapshot()
+    commitGestureHistory(g.checkpoint)
     _isDragging = false
     _gesture = { kind: 'idle' }
     measurementService.hide()
