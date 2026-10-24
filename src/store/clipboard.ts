@@ -1,5 +1,6 @@
-import { markRaw, shallowRef } from 'vue'
+import { markRaw, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { useAuthStore } from '@/store/auth'
 import type { ElementStore } from '@/types/element'
 
 /** Clipboard 資料格式的版本。格式改變時遞增；之後接上系統剪貼簿時，用來辨識讀進來的內容。 */
@@ -34,6 +35,10 @@ export type ClipboardOrigin = 'copy' | 'cut'
  *
  * 與瀏覽器的系統剪貼簿是分開的兩份：反白文字後按 Ctrl+C 寫入的是系統剪貼簿，
  * 畫布上的 Ctrl+V 只讀這裡，貼上的仍是最後一次在畫布上複製或剪下的元素。
+ *
+ * 登入身分改變時清空（見下方的 watch）：已登入的使用者登出、或換成另一位使用者，
+ * 前一位使用者複製的內容不能留給下一個坐在電腦前的人。同一位使用者切換專案、
+ * refresh token 輪替、以及未登入時複製之後才登入，都保留。
  */
 export const useClipboardStore = defineStore('clipboard', () => {
   // shallowRef + markRaw：payload 寫入後就不再改動，不需要也不應該被包成 reactive proxy。
@@ -70,10 +75,24 @@ export const useClipboardStore = defineStore('clipboard', () => {
     _pasteCount++
   }
 
-  /** 清空 Clipboard（登入身分改變時由 Batch 4D 呼叫）。貼上次數在下一次 write 時歸零。 */
+  /** 清空 Clipboard。貼上次數在下一次 write 時歸零。 */
   function clear(): void {
     _payload.value = null
   }
+
+  // 判斷的是「使用者 id」，不是 session 物件：refresh token 輪替時 api 層會以同一位使用者
+  // 重新通知、換一個新的 user 物件，id 不變就不算身分改變。
+  // 只在「原本有登入的使用者」不見了（登出、session 失效、silent refresh 失敗）或換人時清空；
+  // 原本未登入（null）→ 登入，保留未登入時複製的內容。
+  // flush: 'sync'：身分一改變就清空，不等到下一個 tick，中間不會有機會貼上前一位的內容。
+  const authStore = useAuthStore()
+  watch(
+    () => authStore.user?.id ?? null,
+    (userId, previousUserId) => {
+      if (previousUserId !== null && userId !== previousUserId) clear()
+    },
+    { flush: 'sync' },
+  )
 
   return { write, read, nextPasteNumber, recordPaste, clear }
 })
