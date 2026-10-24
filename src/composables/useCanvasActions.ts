@@ -1,6 +1,9 @@
 import { useElementStore } from '@/store/element'
-import { ElementKind, newElementId } from '@/types/element'
-import type { CanvasElement } from '@/types/element'
+import { duplicateElements } from '@/types/duplicate'
+import { ElementKind } from '@/types/element'
+
+/** Ctrl+D 的複本相對原件的位移（世界座標）。 */
+const DUPLICATE_OFFSET = { x: 10, y: 10 } as const
 
 export function useCanvasActions() {
   const elementStore = useElementStore()
@@ -52,50 +55,27 @@ export function useCanvasActions() {
     }
   }
 
+  /**
+   * 複製目前選取的元素（Ctrl/Cmd+D、右鍵選單 Duplicate），整批是一筆 undo。
+   *
+   * 複製本身交給 duplicateElements（與之後的 Copy / Paste 共用）：
+   * - 群組遞迴複製整棵子樹、全部換新 id，複本與原件不共用任何子元素；
+   * - 群組內的子元素被單獨選取（圖層面板）時，複本以絕對座標放到根層級，不會變成孤兒；
+   * - 祖先與子孫同時選取只複製祖先一次；複本依原件的圖層順序放到最上層。
+   *
+   * 頂層複本位移 (10, 10)、名稱加上「 copy」，完成後只選取這些頂層複本。
+   */
   function duplicateSelected(): void {
-    const selected = elementStore.selectedElements
-    if (selected.length === 0) return
+    const { elements, rootIds } = duplicateElements(
+      { byId: elementStore.byId, rootIds: elementStore.rootElements.map((el) => el.id) },
+      [...elementStore.selectedIds],
+      { offset: DUPLICATE_OFFSET, rename: (name) => `${name} copy` },
+    )
+    if (elements.length === 0) return
 
-    const allCopies: CanvasElement[] = []
-    const rootCopyIds: string[] = []
-
-    for (const el of selected) {
-      if (el.kind === ElementKind.Group) {
-        const newGroupId = newElementId()
-        const childIdRemap = new Map(el.childIds.map((cid) => [cid, newElementId()]))
-
-        allCopies.push({
-          ...el,
-          id: newGroupId,
-          name: `${el.name} copy`,
-          x: el.x + 10,
-          y: el.y + 10,
-          childIds: el.childIds.map((cid) => childIdRemap.get(cid)!),
-        })
-        rootCopyIds.push(newGroupId)
-
-        for (const childId of el.childIds) {
-          const child = elementStore.get(childId)
-          if (child) {
-            allCopies.push({ ...child, id: childIdRemap.get(childId)!, parentId: newGroupId })
-          }
-        }
-      } else {
-        const copy = {
-          ...el,
-          id: newElementId(),
-          name: `${el.name} copy`,
-          x: el.x + 10,
-          y: el.y + 10,
-        }
-        allCopies.push(copy)
-        rootCopyIds.push(copy.id)
-      }
-    }
-
-    elementStore.addAll(allCopies)
+    elementStore.addAll(elements)
     elementStore.clearSelection()
-    for (const id of rootCopyIds) elementStore.select(id, true)
+    for (const id of rootIds) elementStore.select(id, true)
   }
 
   return { deleteSelected, groupSelected, ungroupSelected, duplicateSelected }

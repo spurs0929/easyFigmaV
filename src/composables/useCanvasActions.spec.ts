@@ -830,3 +830,392 @@ describe('useCanvasActions.ungroupSelected', () => {
     })
   })
 })
+
+describe('useCanvasActions.duplicateSelected', () => {
+  let pinia: Pinia
+  let store: Store
+  let duplicateSelected: () => void
+
+  beforeEach(() => {
+    pinia = createPinia()
+    setActivePinia(pinia)
+    store = useElementStore()
+    duplicateSelected = useCanvasActions().duplicateSelected
+    // assertStoreIntegrity 發現不一致時只會 console.error。讓它直接丟出來，
+    // 每個測試都順帶驗證 byId / rootIds / parentId / childIds 的一致性。
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      throw new Error(`unexpected console.error: ${args.join(' ')}`)
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  /** 目前選取的 id（複製完成後就是頂層複本）。 */
+  function selected(): string[] {
+    return [...store.selectedIds]
+  }
+
+  /** id 底下的整棵子樹（含自己），前序。 */
+  function subtree(id: string): string[] {
+    const el = store.get(id)
+    if (!el) return []
+    return [id, ...el.childIds.flatMap(subtree)]
+  }
+
+  describe('巢狀群組：複本與原件不共用任何元素', () => {
+    it('Ctrl+D 後刪除複本，原本的群組完整保留（含孫元素）', () => {
+      const { outer } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [outer])
+
+      duplicateSelected()
+      const [copy] = selected()
+      store.removeMany([copy])
+
+      expect(content(store)).toBe(before)
+    })
+
+    it('複本的整棵子樹都是新元素，沒有任何 id 與原件相同', () => {
+      const { outer } = buildUngroupFixture(store)
+      const originalTree = subtree(outer)
+      select(store, [outer])
+
+      duplicateSelected()
+      const copyTree = subtree(selected()[0])
+
+      expect(copyTree).toHaveLength(originalTree.length)
+      expect(copyTree.filter((id) => originalTree.includes(id))).toEqual([])
+      // 每個複本都只掛在複本底下，parentId 與父元素的 childIds 一致
+      for (const id of copyTree.slice(1)) {
+        expect(store.get(store.get(id)!.parentId!)!.childIds).toContain(id)
+      }
+    })
+
+    it('複本的元素在畫布上的位置都是原件位移 (10, 10)', () => {
+      const { outer } = buildUngroupFixture(store)
+      const positions = leafWorldPositions(store)
+      select(store, [outer])
+
+      duplicateSelected()
+      const copyPositions = leafWorldPositions(store)
+      const copyLeaves = subtree(selected()[0]).filter(
+        (id) => store.get(id)!.kind !== ElementKind.Group,
+      )
+
+      expect(copyLeaves.map((id) => copyPositions[id])).toEqual(
+        ['p', 'q', 'r'].map((id) => ({ x: positions[id].x + 10, y: positions[id].y + 10 })),
+      )
+    })
+
+    it('之後修改複本裡的元素，原件不受影響', () => {
+      const { outer } = buildUngroupFixture(store)
+      select(store, [outer])
+      duplicateSelected()
+      const before = JSON.stringify(subtree(outer).map((id) => store.get(id)))
+
+      for (const id of subtree(selected()[0])) store.commitUpdate(id, { x: 999, name: 'changed' })
+
+      expect(JSON.stringify(subtree(outer).map((id) => store.get(id)))).toBe(before)
+    })
+  })
+
+  describe('群組內的子元素被單獨選取（圖層面板）', () => {
+    it('複本放到根層級、以絕對座標位移，原本的群組不變', () => {
+      const { g1 } = buildUngroupFixture(store)
+      const groupBefore = JSON.stringify(subtree(g1).map((id) => store.get(id)))
+      select(store, ['b'])
+
+      duplicateSelected()
+      const [copy] = selected()
+
+      expect(store.get(copy)).toMatchObject({ parentId: undefined, name: 'b copy', x: 50, y: 30 })
+      expect(rootOrder(store).at(-1)).toBe(copy)
+      expect(JSON.stringify(subtree(g1).map((id) => store.get(id)))).toBe(groupBefore)
+    })
+
+    it('巢狀群組裡的元素：累加每一層群組的座標', () => {
+      buildUngroupFixture(store)
+      select(store, ['q'])
+
+      duplicateSelected()
+
+      // q 的絕對位置 (430, 440) + (10, 10)
+      expect(store.get(selected()[0])).toMatchObject({ parentId: undefined, x: 440, y: 450 })
+    })
+
+    it('沒有產生孤兒：每個元素都在根層級或父元素的 childIds 裡', () => {
+      buildUngroupFixture(store)
+      select(store, ['a', 'p', 'r'])
+
+      duplicateSelected()
+
+      const reachable = new Set(rootOrder(store).flatMap(subtree))
+      expect(allIds(store).filter((id) => !reachable.has(id))).toEqual([])
+    })
+
+    it('群組與它的子元素同時選取：只複製群組一次', () => {
+      const { g1 } = buildUngroupFixture(store)
+      const countBefore = allIds(store).length
+      select(store, ['a', g1, 'b'])
+
+      duplicateSelected()
+
+      expect(selected()).toHaveLength(1)
+      expect(store.get(selected()[0])!.name).toBe('Group copy')
+      expect(allIds(store).length).toBe(countBefore + 3)
+    })
+  })
+
+  describe('圖層順序', () => {
+    it('多選複製：複本依原件的圖層順序放到最上層，與選取先後無關', () => {
+      store.addAll([rect('a'), rect('b'), rect('c')])
+      select(store, ['c', 'a'])
+
+      duplicateSelected()
+
+      expect(rootOrder(store).map((id) => store.get(id)!.name)).toEqual([
+        'a',
+        'b',
+        'c',
+        'a copy',
+        'c copy',
+      ])
+    })
+  })
+
+  describe('深拷貝', () => {
+    it('複本不與原件共用 fill、stroke、points、vectorPoints', () => {
+      store.addAll([
+        rect('v', {
+          kind: ElementKind.Vector,
+          points: [0, 0, 1, 1],
+          vectorPoints: [{ x: 0, y: 0, handleOut: { x: 1, y: 0 } }],
+        }),
+      ])
+      select(store, ['v'])
+
+      duplicateSelected()
+      const original = store.get('v')!
+      const copy = store.get(selected()[0])!
+
+      expect(copy.fill).not.toBe(original.fill)
+      expect(copy.stroke).not.toBe(original.stroke)
+      expect(copy.points).not.toBe(original.points)
+      expect(copy.vectorPoints).not.toBe(original.vectorPoints)
+      expect(copy.vectorPoints![0].handleOut).not.toBe(original.vectorPoints![0].handleOut)
+      expect(copy.vectorPoints).toEqual(original.vectorPoints)
+    })
+  })
+
+  describe('Undo / Redo', () => {
+    it('一次複製只產生一筆 Undo：Undo 一次回到複製前，Redo 再次出現同一批複本', () => {
+      const { outer, g1 } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [outer, g1, 'm'])
+
+      duplicateSelected()
+      const after = content(store)
+      store.undo()
+
+      expect(content(store)).toBe(before)
+      store.redo()
+      expect(content(store)).toBe(after)
+    })
+
+    it('history 裡的筆數：fixture 的每一步各一筆，複製只多一筆，沒有空白快照', () => {
+      buildUngroupFixture(store)
+      select(store, ['p', 'm', 'r'])
+
+      duplicateSelected()
+
+      // addAll、四次 group、duplicate
+      expect(drainUndo(store)).toEqual({ effective: 6, empty: 0 })
+    })
+
+    it('Undo 之後複製：原本的 Redo 失效，新的一筆可以正常 Undo / Redo', () => {
+      store.addAll([rect('a')])
+      store.commitUpdate('a', { x: 50 })
+      store.undo()
+      select(store, ['a'])
+
+      duplicateSelected()
+      const after = content(store)
+
+      store.redo()
+      expect(content(store)).toBe(after)
+      store.undo()
+      expect(allIds(store)).toEqual(['a'])
+      expect(store.get('a')!.x).toBe(0)
+    })
+  })
+
+  describe('既有行為不變', () => {
+    it('單一元素：複本名稱加 copy、位移 (10, 10)、放在最上層並成為唯一的選取', () => {
+      store.addAll([rect('a', { x: 5, y: 7, rotation: 20, opacity: 0.3 }), rect('b')])
+      select(store, ['a'])
+
+      duplicateSelected()
+      const [copy] = selected()
+
+      expect(copy).not.toBe('a')
+      expect(rootOrder(store)).toEqual(['a', 'b', copy])
+      expect(store.get(copy)).toEqual({
+        ...store.get('a'),
+        id: copy,
+        name: 'a copy',
+        x: 15,
+        y: 17,
+      })
+      expect(store.get('a')).toEqual(rect('a', { x: 5, y: 7, rotation: 20, opacity: 0.3 }))
+    })
+
+    it('群組：複本群組位移 (10, 10)、名稱加 copy；子元素座標相對群組不變、名稱不變', () => {
+      const { g2 } = buildUngroupFixture(store)
+      select(store, [g2])
+
+      duplicateSelected()
+      const copy = store.get(selected()[0])!
+      const [c, d] = copy.childIds.map((id) => store.get(id)!)
+
+      expect(copy).toMatchObject({ name: 'Group copy', x: 110, y: 160 })
+      expect(c).toMatchObject({ name: 'c', x: 0, y: 0 })
+      expect(d).toMatchObject({ name: 'd', x: 30, y: 20 })
+    })
+
+    it('多選複製後只選取所有頂層複本', () => {
+      const { g1 } = buildUngroupFixture(store)
+      select(store, [g1, 'm', 'z'])
+
+      duplicateSelected()
+
+      expect(selected()).toHaveLength(3)
+      expect(selected().every((id) => store.get(id)!.parentId === undefined)).toBe(true)
+      expect(
+        selected()
+          .map((id) => store.get(id)!.name)
+          .sort(),
+      ).toEqual(['Group copy', 'm copy', 'z copy'])
+    })
+  })
+
+  describe('無效的選取', () => {
+    it('沒有選取：不動 store、不增加 history、不增加 documentRevision', () => {
+      store.addAll([rect('a')])
+      const before = content(store)
+      const revision = store.documentRevision
+
+      duplicateSelected()
+
+      expect(content(store)).toBe(before)
+      expect(store.documentRevision).toBe(revision)
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+
+    it('選取裡只有已不存在的 id：不動 store，選取不變', () => {
+      store.addAll([rect('a')])
+      store.select('ghost')
+      const revision = store.documentRevision
+
+      duplicateSelected()
+
+      expect(allIds(store)).toEqual(['a'])
+      expect(store.documentRevision).toBe(revision)
+      expect(selected()).toEqual(['ghost'])
+    })
+
+    it('Undo 之後以無效的選取按複製：Redo 不被截斷', () => {
+      store.addAll([rect('a')])
+      store.commitUpdate('a', { x: 50 })
+      store.undo()
+      store.clearSelection()
+
+      duplicateSelected()
+      store.redo()
+
+      expect(store.get('a')!.x).toBe(50)
+    })
+  })
+
+  describe('複製的入口都只產生一筆 Undo', () => {
+    function createKeyboard(gesture: GestureState = { kind: 'idle' }) {
+      return useCanvasKeyboard({
+        getGesture: () => gesture,
+        cancelPenGesture: vi.fn(),
+        cancelPencilGesture: vi.fn(),
+        finishPenGesture: vi.fn(),
+        refreshPenGesture: vi.fn(),
+        pointerWorld: () => ({ x: 0, y: 0 }),
+        deleteSelected: vi.fn(),
+        duplicateSelected,
+        groupSelected: vi.fn(),
+        ungroupSelected: vi.fn(),
+        onAltRelease: vi.fn(),
+      })
+    }
+
+    it.each([
+      ['Ctrl+D', { ctrlKey: true }],
+      ['Cmd+D', { metaKey: true }],
+    ])('鍵盤 %s：巢狀群組複製是一筆 Undo', (_label, modifier) => {
+      const { outer } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [outer])
+      const event = new KeyboardEvent('keydown', { key: 'd', cancelable: true, ...modifier })
+
+      createKeyboard().onKeydown(event)
+
+      expect(event.defaultPrevented).toBe(true)
+      expect(allIds(store).length).toBe(Object.keys(JSON.parse(before).byId).length + 5)
+      store.undo()
+      expect(content(store)).toBe(before)
+    })
+
+    it('拖曳中按 Ctrl+D：不複製（U3A 的守衛仍然有效）', () => {
+      const { outer } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [outer])
+      const event = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, cancelable: true })
+
+      createKeyboard({ kind: 'dragging' } as unknown as GestureState).onKeydown(event)
+
+      expect(event.defaultPrevented).toBe(true)
+      expect(content(store)).toBe(before)
+    })
+
+    it('右鍵選單的 Duplicate（畫布與圖層面板共用）：一筆 Undo', () => {
+      const { outer } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, [outer, 'b'])
+      const contextMenu: ContextMenuState = {
+        x: 0,
+        y: 0,
+        hasSelection: true,
+        canGroup: false,
+        canUngroup: true,
+      }
+      const wrapper = mount(SelectionContextMenu, {
+        props: { contextMenu },
+        global: { plugins: [pinia] },
+        attachTo: document.body,
+      })
+
+      // 選單 Teleport 到 body，不在 wrapper 的 DOM 樹裡。
+      const item = [...document.body.querySelectorAll<HTMLElement>('.ctx-item')].find((el) =>
+        el.textContent?.trim().startsWith('Duplicate'),
+      )
+      expect(item).toBeDefined()
+      item!.click()
+
+      expect(selected()).toHaveLength(2)
+      expect(wrapper.emitted('close')).toHaveLength(1)
+      store.undo()
+      expect(content(store)).toBe(before)
+      expect(drainUndo(store)).toEqual({ effective: 5, empty: 0 })
+
+      wrapper.unmount()
+    })
+  })
+})
