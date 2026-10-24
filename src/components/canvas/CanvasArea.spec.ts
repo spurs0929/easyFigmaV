@@ -1230,3 +1230,90 @@ describe('CanvasArea：window mouseup listener', () => {
     expect(push).not.toHaveBeenCalled()
   })
 })
+
+// ── 拖曳中按會改文件的快捷鍵 ─────────────────────────────────────────────────
+
+describe('CanvasArea：拖曳中按會改文件的快捷鍵', () => {
+  /** a 在 (100,100)、b 在 (300,100)，兩個都選取。 */
+  async function mountTwoSelected(): Promise<Store> {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    store.select('a')
+    store.select('b', true)
+    await nextTick()
+    return store
+  }
+
+  /** 拖曳 a：中途按下快捷鍵，繼續拖到總位移 (40, 50) 後在畫布上放開。 */
+  async function dragWithShortcutInBetween(shortcut: () => void) {
+    press(150, 150)
+    move(170, 180)
+    shortcut()
+    await nextTick()
+    move(190, 200)
+    releaseOnStage(190, 200)
+    await macrotask()
+  }
+
+  function groups(store: Store): CanvasElement[] {
+    return Object.values(store.byId).filter((el) => el.kind === ElementKind.Group)
+  }
+
+  it('Ctrl+G：不建立群組，兩個元素停在正確位置，只有拖曳這一筆 Undo', async () => {
+    // 修正前：群組把子元素改成相對座標，拖曳卻繼續寫入絕對座標，a 跑到 (260, 280)。
+    const store = await mountTwoSelected()
+
+    await dragWithShortcutInBetween(() => key('g', { ctrlKey: true }))
+
+    expect(groups(store)).toHaveLength(0)
+    expect(store.get('a')).toMatchObject({ x: 140, y: 150, parentId: undefined })
+    expect(store.get('b')).toMatchObject({ x: 340, y: 150, parentId: undefined })
+    expect(undoDepth(store)).toBe(1)
+
+    pressUndo()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(box(store, 'b')).toMatchObject({ x: 300, y: 100 })
+  })
+
+  it('Ctrl+D：不建立複本，只有拖曳這一筆 Undo', async () => {
+    // 修正前：複本以拖到一半的位置建立並推一筆快照，Undo 一次停在中間狀態。
+    const store = await mountTwoSelected()
+
+    await dragWithShortcutInBetween(() => key('d', { ctrlKey: true }))
+
+    expect(Object.keys(store.byId).sort()).toEqual(['a', 'b'])
+    expect(box(store, 'a')).toMatchObject({ x: 140, y: 150 })
+    expect(undoDepth(store)).toBe(1)
+
+    pressUndo()
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+  })
+
+  it('Delete：不刪除元素，只有拖曳這一筆 Undo', async () => {
+    const store = await mountTwoSelected()
+
+    await dragWithShortcutInBetween(() => key('Delete'))
+
+    expect(Object.keys(store.byId).sort()).toEqual(['a', 'b'])
+    expect(box(store, 'b')).toMatchObject({ x: 340, y: 150 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('拖曳結束後 Ctrl+G 恢復作用：建立群組、是另一筆 Undo', async () => {
+    const store = await mountTwoSelected()
+
+    await dragWithShortcutInBetween(() => key('g', { ctrlKey: true }))
+    // 既有行為：在畫布上放開後 Konva 合成的 click 會把選取縮成被按住的 a，所以重新選取。
+    store.select('a')
+    store.select('b', true)
+    key('g', { ctrlKey: true })
+    await nextTick()
+
+    const [group] = groups(store)
+    expect(group?.childIds).toEqual(['a', 'b'])
+    expect(undoDepth(store)).toBe(2)
+
+    pressUndo()
+    expect(groups(store)).toHaveLength(0)
+    expect(store.get('a')).toMatchObject({ x: 140, y: 150, parentId: undefined })
+  })
+})

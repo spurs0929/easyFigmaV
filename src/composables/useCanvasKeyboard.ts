@@ -29,18 +29,23 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
   }
 
   /**
-   * 手勢進行中不可 Undo / Redo。
+   * 手勢進行中不可執行任何會改文件的快捷鍵（Undo / Redo、刪除、複製、群組、圖層順序）。
    *
    * 拖曳、縮放進行到一半時，store 已經被改動但還沒推快照；繪製、Pen、Pencil 的草稿
-   * 則還在 store 之外。這時把 store 換回上一筆，手勢卻會繼續，結束時再推的那一筆
-   * 快照會截斷 redo——被 undo 掉的那一步就永遠拿不回來。
+   * 則還在 store 之外。這時再改文件，手勢卻會繼續：
+   * - Undo / Redo：store 被換回上一筆，結束時再推的那一筆快照會截斷 redo，被 undo
+   *   掉的那一步就永遠拿不回來。
+   * - Ctrl+G：子元素改用相對於群組的座標，拖曳卻繼續寫入拖曳開始時的絕對座標加位移，
+   *   元素跳到錯誤的位置，而且會被自動存檔存下來。
+   * - Ctrl+D：複本以拖到一半的位置建立並推一筆快照，放開時再推一筆，Undo 一次會停在
+   *   使用者從沒做出來的中間狀態。
    *
    * 所以只要不是 idle 就整個忽略，包含 Pen：Pen 繪製中的 Ctrl+Z 不做「退回上一個
-   * 錨點」，要刪錨點用 Backspace / Delete。
+   * 錨點」，要刪錨點用 Backspace / Delete（那兩個鍵在 Pen 中由 onKeydown 先處理）。
    *
-   * 呼叫端仍然要先 preventDefault：被忽略時也不能讓瀏覽器執行它自己的復原 / 重做。
+   * 被忽略時仍然要 preventDefault：不能讓瀏覽器執行它自己的復原、加入書籤、尋找下一個。
    */
-  function canUseHistory(): boolean {
+  function canModifyDocument(): boolean {
     return opts.getGesture().kind === 'idle'
   }
 
@@ -52,87 +57,42 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
     return parts.join('+')
   }
 
-  const _keyCommands = new Map<string, (e: KeyboardEvent) => void>([
-    [
-      'delete',
-      (e) => {
-        e.preventDefault()
-        opts.deleteSelected()
-      },
-    ],
-    [
-      'backspace',
-      (e) => {
-        e.preventDefault()
-        opts.deleteSelected()
-      },
-    ],
-    [
-      'ctrl+z',
-      (e) => {
-        e.preventDefault()
-        if (!canUseHistory()) return
-        elementStore.undo()
-      },
-    ],
-    [
-      'ctrl+y',
-      (e) => {
-        e.preventDefault()
-        if (!canUseHistory()) return
-        elementStore.redo()
-      },
-    ],
-    [
-      'ctrl+shift+z',
-      (e) => {
-        e.preventDefault()
-        if (!canUseHistory()) return
-        elementStore.redo()
-      },
-    ],
-    [
-      'ctrl+d',
-      (e) => {
-        e.preventDefault()
-        opts.duplicateSelected()
-      },
-    ],
-    [
-      'ctrl+g',
-      (e) => {
-        e.preventDefault()
-        opts.groupSelected()
-      },
-    ],
-    [
-      'ctrl+shift+g',
-      (e) => {
-        e.preventDefault()
-        opts.ungroupSelected()
-      },
-    ],
-    [
-      'ctrl+a',
-      (e) => {
-        e.preventDefault()
-        elementStore.selectAll()
-      },
-    ],
+  interface KeyCommand {
+    /** true：會改文件，手勢進行中忽略（見 canModifyDocument）。新增快捷鍵時必須表態。 */
+    modifiesDocument: boolean
+    run: () => void
+  }
+
+  // 每一個快捷鍵都會 preventDefault（由 onKeydown 統一處理），包含被忽略的時候。
+  const _keyCommands = new Map<string, KeyCommand>([
+    ['delete', { modifiesDocument: true, run: () => opts.deleteSelected() }],
+    ['backspace', { modifiesDocument: true, run: () => opts.deleteSelected() }],
+    ['ctrl+z', { modifiesDocument: true, run: () => elementStore.undo() }],
+    ['ctrl+y', { modifiesDocument: true, run: () => elementStore.redo() }],
+    ['ctrl+shift+z', { modifiesDocument: true, run: () => elementStore.redo() }],
+    ['ctrl+d', { modifiesDocument: true, run: () => opts.duplicateSelected() }],
+    ['ctrl+g', { modifiesDocument: true, run: () => opts.groupSelected() }],
+    ['ctrl+shift+g', { modifiesDocument: true, run: () => opts.ungroupSelected() }],
+    // 只改選取，不改文件：手勢中照常可用。
+    ['ctrl+a', { modifiesDocument: false, run: () => elementStore.selectAll() }],
     [
       ']',
-      (e) => {
-        e.preventDefault()
-        ;[...elementStore.selectedIds].forEach((id) => elementStore.bringToFront(id))
-        elementStore.pushSnapshot()
+      {
+        modifiesDocument: true,
+        run: () => {
+          ;[...elementStore.selectedIds].forEach((id) => elementStore.bringToFront(id))
+          elementStore.pushSnapshot()
+        },
       },
     ],
     [
       '[',
-      (e) => {
-        e.preventDefault()
-        ;[...elementStore.selectedIds].forEach((id) => elementStore.sendToBack(id))
-        elementStore.pushSnapshot()
+      {
+        modifiesDocument: true,
+        run: () => {
+          ;[...elementStore.selectedIds].forEach((id) => elementStore.sendToBack(id))
+          elementStore.pushSnapshot()
+        },
       },
     ],
   ])
@@ -179,7 +139,11 @@ export function useCanvasKeyboard(opts: CanvasKeyboardOptions) {
       return
     }
     if (isTypingTarget(getDeepActiveElement())) return
-    _keyCommands.get(keyCombo(e))?.(e)
+    const command = _keyCommands.get(keyCombo(e))
+    if (!command) return
+    e.preventDefault()
+    if (command.modifiesDocument && !canModifyDocument()) return
+    command.run()
   }
 
   function onKeyup(e: KeyboardEvent): void {

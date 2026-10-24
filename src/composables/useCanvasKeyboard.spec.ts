@@ -375,3 +375,163 @@ describe('useCanvasKeyboard：Undo / Redo 與進行中的手勢', () => {
     })
   })
 })
+
+// ── 會改文件的其他快捷鍵（Undo / Redo 以外）────────────────────────────────────
+
+type DocumentAction = 'delete' | 'duplicate' | 'group' | 'ungroup' | 'bringToFront' | 'sendToBack'
+
+interface DocumentShortcut {
+  label: string
+  init: KeyboardEventInit
+  action: DocumentAction
+}
+
+// Shift 按著時瀏覽器回報的 key 是大寫 G。Cmd（metaKey）與 Ctrl 走同一條路徑。
+const DOCUMENT_SHORTCUTS: DocumentShortcut[] = [
+  { label: 'Delete', init: { key: 'Delete' }, action: 'delete' },
+  { label: 'Backspace', init: { key: 'Backspace' }, action: 'delete' },
+  { label: 'Ctrl+D', init: { key: 'd', ctrlKey: true }, action: 'duplicate' },
+  { label: 'Cmd+D', init: { key: 'd', metaKey: true }, action: 'duplicate' },
+  { label: 'Ctrl+G', init: { key: 'g', ctrlKey: true }, action: 'group' },
+  { label: 'Cmd+G', init: { key: 'g', metaKey: true }, action: 'group' },
+  { label: 'Ctrl+Shift+G', init: { key: 'G', ctrlKey: true, shiftKey: true }, action: 'ungroup' },
+  { label: 'Cmd+Shift+G', init: { key: 'G', metaKey: true, shiftKey: true }, action: 'ungroup' },
+  { label: ']', init: { key: ']' }, action: 'bringToFront' },
+  { label: '[', init: { key: '[' }, action: 'sendToBack' },
+]
+
+describe('useCanvasKeyboard：刪除、複製、群組、圖層順序與進行中的手勢', () => {
+  let store: Store
+
+  /** rootIds = [a, b, c]，選取中間的 b：往前、往後都會真的改變順序。 */
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useElementStore()
+    store.add(rect('a'))
+    store.add(rect('b'))
+    store.add(rect('c'))
+    store.select('b')
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  function rootOrder(): string[] {
+    return store.rootElements.map((el) => el.id)
+  }
+
+  /** 每個快捷鍵實際會呼叫的東西：CanvasArea 提供的 callback，或直接改 store 的方法。 */
+  function actionSpies(spies: ReturnType<typeof createKeyboard>['spies']) {
+    return {
+      delete: spies.deleteSelected,
+      duplicate: spies.duplicateSelected,
+      group: spies.groupSelected,
+      ungroup: spies.ungroupSelected,
+      bringToFront: vi.spyOn(store, 'bringToFront'),
+      sendToBack: vi.spyOn(store, 'sendToBack'),
+    }
+  }
+
+  describe('手勢進行中', () => {
+    // Pen 中的 Delete / Backspace 是「刪除最後一個錨點」，由 Pen 自己處理（見上方 Pen 測試）。
+    const cases = ACTIVE_KINDS.flatMap((kind) =>
+      DOCUMENT_SHORTCUTS.filter((s) => !(kind === 'pen' && s.action === 'delete')).map(
+        (shortcut) => ({ kind, ...shortcut }),
+      ),
+    )
+
+    it.each(cases)('$kind 中按 $label：不改文件，但仍擋下瀏覽器預設行為', (c) => {
+      const { press, spies } = createKeyboard(ACTIVE_GESTURES[c.kind]())
+      const actions = actionSpies(spies)
+      const pushSnapshot = vi.spyOn(store, 'pushSnapshot')
+      const revision = store.documentRevision
+
+      const event = press(c.init)
+
+      expect(event.defaultPrevented).toBe(true)
+      for (const spy of Object.values(actions)) expect(spy).not.toHaveBeenCalled()
+      expect(pushSnapshot).not.toHaveBeenCalled()
+      // 文件內容、順序、選取、自動存檔的觸發計數都不能動。
+      expect(ids(store)).toEqual(['a', 'b', 'c'])
+      expect(rootOrder()).toEqual(['a', 'b', 'c'])
+      expect([...store.selectedIds]).toEqual(['b'])
+      expect(store.documentRevision).toBe(revision)
+    })
+
+    it.each(ACTIVE_KINDS)('%s 中按過所有文件快捷鍵之後，history 不變', (kind) => {
+      const { press } = createKeyboard(ACTIVE_GESTURES[kind]())
+      for (const shortcut of DOCUMENT_SHORTCUTS) press(shortcut.init)
+
+      // 仍然剛好是建立 a、b、c 的三步，沒有多出或被截斷的快照。
+      expect(drain(store, () => store.undo())).toBe(3)
+      expect(drain(store, () => store.redo())).toBe(3)
+      expect(ids(store)).toEqual(['a', 'b', 'c'])
+    })
+
+    it.each(ACTIVE_KINDS)('%s 中按 Ctrl+A：只改選取，照常可用', (kind) => {
+      const { press } = createKeyboard(ACTIVE_GESTURES[kind]())
+      const revision = store.documentRevision
+
+      const event = press({ key: 'a', ctrlKey: true })
+
+      expect(event.defaultPrevented).toBe(true)
+      expect([...store.selectedIds].sort()).toEqual(['a', 'b', 'c'])
+      expect(store.documentRevision).toBe(revision)
+    })
+  })
+
+  describe('idle', () => {
+    it.each(DOCUMENT_SHORTCUTS)('$label 照常執行', (s) => {
+      const { press, spies } = createKeyboard()
+      const actions = actionSpies(spies)
+
+      const event = press(s.init)
+
+      expect(event.defaultPrevented).toBe(true)
+      expect(actions[s.action]).toHaveBeenCalled()
+      const others = Object.entries(actions).filter(([action]) => action !== s.action)
+      for (const [, spy] of others) expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('] / [ 實際改變圖層順序，各是一筆 Undo', () => {
+      const { press } = createKeyboard()
+
+      press({ key: ']' })
+      expect(rootOrder()).toEqual(['a', 'c', 'b'])
+      press({ key: '[' })
+      expect(rootOrder()).toEqual(['b', 'a', 'c'])
+
+      store.undo()
+      expect(rootOrder()).toEqual(['a', 'c', 'b'])
+      store.undo()
+      expect(rootOrder()).toEqual(['a', 'b', 'c'])
+    })
+
+    it('手勢結束回到 idle 之後，同一組快捷鍵恢復作用', () => {
+      const { press, spies, setGesture } = createKeyboard(ACTIVE_GESTURES.dragging())
+
+      press({ key: 'g', ctrlKey: true })
+      expect(spies.groupSelected).not.toHaveBeenCalled()
+
+      setGesture({ kind: 'idle' })
+      press({ key: 'g', ctrlKey: true })
+      expect(spies.groupSelected).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('輸入框聚焦', () => {
+    it.each(DOCUMENT_SHORTCUTS)('手勢進行中 $label 交給輸入框：不擋預設行為', (s) => {
+      const input = document.createElement('input')
+      document.body.appendChild(input)
+      input.focus()
+      const { press, spies } = createKeyboard(ACTIVE_GESTURES.dragging())
+      const actions = actionSpies(spies)
+
+      const event = press(s.init)
+
+      expect(event.defaultPrevented).toBe(false)
+      for (const spy of Object.values(actions)) expect(spy).not.toHaveBeenCalled()
+    })
+  })
+})
