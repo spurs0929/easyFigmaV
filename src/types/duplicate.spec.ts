@@ -285,6 +285,7 @@ describe('duplicateElements', () => {
       const result = duplicateElements(nestedStore(), ids, options())
 
       expect(result.rootIds).toEqual(['n1'])
+      expect(result.sourceRootIds).toEqual(['outer'])
       expect(result.elements).toHaveLength(5)
       expect(result.elements[0]).toMatchObject({ name: 'outer copy', x: 410, y: 310 })
     })
@@ -305,7 +306,11 @@ describe('duplicateElements', () => {
     it('不在文件樹上的孤兒略過', () => {
       const store = storeOf([el('a'), el('orphan', { parentId: 'gone' })], ['a'])
 
-      expect(duplicateElements(store, ['orphan'], options())).toEqual({ elements: [], rootIds: [] })
+      expect(duplicateElements(store, ['orphan'], options())).toEqual({
+        elements: [],
+        rootIds: [],
+        sourceRootIds: [],
+      })
     })
 
     it('沒有任何可複製的元素：回傳空結果，也不消耗 id', () => {
@@ -313,7 +318,7 @@ describe('duplicateElements', () => {
 
       const result = duplicateElements(nestedStore(), [], options({ newId }))
 
-      expect(result).toEqual({ elements: [], rootIds: [] })
+      expect(result).toEqual({ elements: [], rootIds: [], sourceRootIds: [] })
       expect(newId()).toBe('n1')
     })
   })
@@ -322,6 +327,7 @@ describe('duplicateElements', () => {
     it('頂層複本依原件的圖層順序（由下到上），與選取的先後無關', () => {
       const result = duplicateElements(nestedStore(), ['z', 'outer', 'm'], options())
 
+      expect(result.sourceRootIds).toEqual(['m', 'outer', 'z'])
       expect(result.rootIds.map((id) => byId(result.elements)[id].name)).toEqual([
         'm copy',
         'outer copy',
@@ -336,6 +342,7 @@ describe('duplicateElements', () => {
     it('不同層級混合：依繪製順序（父元素先於子元素，同層由下到上）', () => {
       const result = duplicateElements(nestedStore(), ['z', 'r', 'p', 'm'], options())
 
+      expect(result.sourceRootIds).toEqual(['m', 'p', 'r', 'z'])
       expect(result.rootIds.map((id) => byId(result.elements)[id].name)).toEqual([
         'm copy',
         'p copy',
@@ -439,6 +446,7 @@ describe('duplicateElements', () => {
       expect(duplicateElements(store, ['a', 'h', 'k'], options())).toEqual({
         elements: [],
         rootIds: [],
+        sourceRootIds: [],
       })
       expect(duplicateElements(store, ['g'], options()).elements).toHaveLength(1)
     })
@@ -484,6 +492,7 @@ describe('duplicateElements', () => {
       const copies = byId(result.elements)
 
       expect(result.rootIds).toEqual(['n1', 'n2'])
+      expect(result.sourceRootIds).toEqual(['A', 'B'])
       expect(copies.n1).toMatchObject({ name: 'A copy', childIds: [] })
       expect(copies.n2).toMatchObject({ name: 'B copy', childIds: ['n3'] })
       expect(copies.n3).toMatchObject({ name: 'C', parentId: 'n2' })
@@ -498,11 +507,13 @@ describe('duplicateElements', () => {
       const result = duplicateElements(conflictStore(), ids, options())
       const copies = byId(result.elements)
 
-      expect(result.elements.map((e) => e.name).filter((name) => name.startsWith('C'))).toEqual([
-        'C',
-      ])
-      const cCopy = result.elements.find((e) => e.name === 'C')!
-      expect(copies[cCopy.parentId!].name).toBe('B copy')
+      // C 沒有成為頂層複本：頂層只有 A / B 的原件，C 的複本只有一份，掛在 B 的複本底下。
+      expect(result.sourceRootIds).not.toContain('C')
+      expect(result.sourceRootIds).toEqual(ids.includes('A') ? ['A', 'B'] : ['B'])
+      const bCopy = result.rootIds[result.sourceRootIds.indexOf('B')]
+      expect(copies[bCopy].childIds).toHaveLength(1)
+      expect(copies[copies[bCopy].childIds[0]]).toMatchObject({ name: 'C', parentId: bCopy })
+      expect(result.elements).toHaveLength(result.rootIds.length + 1)
     })
 
     it('只選 C：以 B（parentId）為原點換算絕對座標', () => {

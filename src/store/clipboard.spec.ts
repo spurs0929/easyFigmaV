@@ -35,10 +35,13 @@ function user(id: string): User {
   return { id, email: `${id}@example.com`, display_name: id, created_at: '2026-10-24T00:00:00Z' }
 }
 
+let tokenCount = 0
+
 /** 每次都是新的物件與新的 token，模擬 refresh 輪替。 */
 function session(userId: string): Session {
+  tokenCount += 1
   return {
-    access_token: `token-${Math.random()}`,
+    access_token: `token-${tokenCount}`,
     token_type: 'bearer',
     expires_in: 900,
     user: user(userId),

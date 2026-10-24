@@ -99,32 +99,34 @@ export function useCanvasActions() {
   /**
    * 剪下目前選取的元素（Ctrl/Cmd+X）：先把完整內容寫進 Clipboard，成功後才刪除原件。
    *
+   * 只刪除真的寫進 Clipboard 的來源元素（複製核心的 sourceRootIds，各自連同子樹），
+   * 不直接沿用選取：選取裡不在文件樹上、沒被複製到的元素不會被刪掉。
    * 刪除用 removeMany，整批是一筆 undo；Undo 剪下會完整恢復原件，Clipboard 不變。
    * 剪下的內容貼上時保留原名（見 pasteClipboard）。沒有任何可剪下的元素時，
    * 不改 Clipboard、文件與 history。
    */
   function cutSelected(): void {
-    const ids = [...elementStore.selectedIds]
-    if (!writeSelectionToClipboard('cut')) return
-    elementStore.removeMany(ids)
+    const sourceRootIds = writeSelectionToClipboard('cut')
+    if (!sourceRootIds) return
+    elementStore.removeMany(sourceRootIds)
   }
 
   /**
-   * 用複製核心把目前的選取整理成一棵自成一體的樹寫進 Clipboard（見 ClipboardPayload）。
-   * 沒有任何可複製的元素時不寫入、保留原本的內容，回傳 false。
+   * 用複製核心把目前的選取整理成一棵自成一體的樹寫進 Clipboard（見 ClipboardPayload），
+   * 回傳實際被複製的來源頂層元素 id。沒有任何可複製的元素時不寫入、保留原本的內容，回傳 null。
    */
-  function writeSelectionToClipboard(origin: ClipboardOrigin): boolean {
-    const { elements, rootIds } = duplicateElements(
+  function writeSelectionToClipboard(origin: ClipboardOrigin): string[] | null {
+    const { elements, rootIds, sourceRootIds } = duplicateElements(
       currentDocument(),
       [...elementStore.selectedIds],
       { offset: { x: 0, y: 0 }, rename: (name) => name },
     )
-    if (elements.length === 0) return false
+    if (elements.length === 0) return null
     clipboardStore.write(
       { byId: Object.fromEntries(elements.map((el) => [el.id, el])), rootIds },
       origin,
     )
-    return true
+    return sourceRootIds
   }
 
   /**

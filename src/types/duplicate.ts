@@ -26,6 +26,11 @@ export interface DuplicateResult {
   elements: CanvasElement[]
   /** 頂層複本的 id，順序同 elements（由下到上）。 */
   rootIds: string[]
+  /**
+   * 實際被複製的來源頂層元素 id，與 rootIds 一一對應。
+   * 剪下用它決定要刪除哪些原件：只刪真的被複製到的，不在文件樹上而沒被複製的選取不會被刪掉。
+   */
+  sourceRootIds: string[]
 }
 
 /**
@@ -111,6 +116,7 @@ export function duplicateElements(
 
   const elements: CanvasElement[] = []
   const rootIds: string[] = []
+  const sourceRootIds: string[] = []
   // 已經複製過的原件。除了上面的祖先 / 子孫，也擋住同一個 childIds 裡重複列出的 id。
   const copied = new Set<string>()
 
@@ -140,7 +146,8 @@ export function duplicateElements(
     copy.x = x + options.offset.x
     copy.y = y + options.offset.y
     rootIds.push(copy.id)
+    sourceRootIds.push(id)
   }
 
-  return { elements, rootIds }
+  return { elements, rootIds, sourceRootIds }
 }

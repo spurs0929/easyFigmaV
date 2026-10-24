@@ -3,6 +3,7 @@ import { nextTick } from 'vue'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import Konva from 'konva'
+import { useClipboardStore } from '@/store/clipboard'
 import { useElementStore } from '@/store/element'
 import { useToolStore } from '@/store/tool'
 import { useViewportStore } from '@/store/viewport'
@@ -1511,5 +1512,166 @@ describe('CanvasArea：拖曳中按會改文件的快捷鍵', () => {
     pressUndo()
     expect(groups(store)).toHaveLength(0)
     expect(store.get('a')).toMatchObject({ x: 140, y: 150, parentId: undefined })
+  })
+})
+
+describe('CanvasArea：Copy／Cut／Paste 整合（Batch 4）', () => {
+  /** 畫布上有沒有畫出這個元素（用元素 id 找 Konva shape）。 */
+  function drawn(id: string): boolean {
+    return stage.findOne((n: Konva.Node) => n.id() === id) !== undefined
+  }
+
+  function names(store: Store): string[] {
+    return store.rootElements.map((el) => el.name)
+  }
+
+  function selectedId(store: Store): string {
+    expect(store.selectedIds.size).toBe(1)
+    return [...store.selectedIds][0]
+  }
+
+  /** 拖曳 a：中途按下快捷鍵，繼續拖到總位移 (40, 50) 後在畫布上放開。 */
+  async function dragWithShortcutInBetween(shortcut: () => void) {
+    press(150, 150)
+    move(170, 180)
+    shortcut()
+    await nextTick()
+    move(190, 200)
+    releaseOnStage(190, 200)
+    await macrotask()
+  }
+
+  it('Ctrl+C → Ctrl+V：貼上的元素畫在畫布上並成為選取，一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    key('c', { ctrlKey: true })
+    key('v', { ctrlKey: true })
+    await nextTick()
+    const pasted = selectedId(store)
+
+    expect(store.get(pasted)).toMatchObject({ name: 'a copy', x: 110, y: 110 })
+    expect(drawn(pasted)).toBe(true)
+    expect(undoDepth(store)).toBe(1)
+
+    pressUndo()
+    await nextTick()
+    expect(names(store)).toEqual(['a'])
+    expect(drawn(pasted)).toBe(false)
+  })
+
+  it('Ctrl+X → Ctrl+V：剪下後畫布上不再有原件，貼回保留原名；兩次 Undo 回到原狀', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    await selectAndRender(store, 'a')
+
+    key('x', { ctrlKey: true })
+    await nextTick()
+    expect(names(store)).toEqual(['b'])
+    expect(drawn('a')).toBe(false)
+
+    key('v', { ctrlKey: true })
+    await nextTick()
+    const pasted = selectedId(store)
+    expect(store.get(pasted)).toMatchObject({ name: 'a', x: 110, y: 110 })
+    expect(drawn(pasted)).toBe(true)
+    expect(undoDepth(store)).toBe(2)
+
+    pressUndo()
+    pressUndo()
+    await nextTick()
+    expect(names(store)).toEqual(['a', 'b'])
+    expect(box(store, 'a')).toMatchObject({ x: 100, y: 100 })
+    expect(drawn('a')).toBe(true)
+  })
+
+  it('拖曳中按 Ctrl+V：不貼上，只有拖曳這一筆 Undo；放開後 Ctrl+V 恢復作用', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    await selectAndRender(store, 'b')
+    key('c', { ctrlKey: true })
+    await selectAndRender(store, 'a')
+
+    await dragWithShortcutInBetween(() => key('v', { ctrlKey: true }))
+
+    expect(names(store)).toEqual(['a', 'b'])
+    expect(box(store, 'a')).toMatchObject({ x: 140, y: 150 })
+    expect(undoDepth(store)).toBe(1)
+
+    key('v', { ctrlKey: true })
+    expect(names(store)).toEqual(['a', 'b', 'b copy'])
+    expect(undoDepth(store)).toBe(2)
+  })
+
+  it('拖曳中按 Ctrl+X：不剪下、Clipboard 不變，只有拖曳這一筆 Undo', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    const clipboard = useClipboardStore()
+    await selectAndRender(store, 'a')
+
+    await dragWithShortcutInBetween(() => key('x', { ctrlKey: true }))
+
+    expect(names(store)).toEqual(['a', 'b'])
+    expect(box(store, 'a')).toMatchObject({ x: 140, y: 150 })
+    expect(clipboard.read()).toBeNull()
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('拖曳中按 Ctrl+C：照常寫入 Clipboard（當下的位置），拖曳結果與 History 不受影響', async () => {
+    const store = await mountCanvas([rect('a')])
+    const clipboard = useClipboardStore()
+    await selectAndRender(store, 'a')
+
+    await dragWithShortcutInBetween(() => key('c', { ctrlKey: true }))
+
+    expect(box(store, 'a')).toMatchObject({ x: 140, y: 150 })
+    expect(undoDepth(store)).toBe(1)
+    // 按下 Ctrl+C 時拖到一半：(100, 100) + (20, 30)
+    expect(Object.values(clipboard.read()!.elements.byId)).toMatchObject([{ x: 120, y: 130 }])
+  })
+
+  it('Ctrl+D 不碰 Clipboard：之後 Ctrl+V 貼上的仍是先前複製的內容', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    await selectAndRender(store, 'b')
+    key('c', { ctrlKey: true })
+    await selectAndRender(store, 'a')
+
+    key('d', { ctrlKey: true })
+    key('v', { ctrlKey: true })
+
+    expect(names(store)).toEqual(['a', 'b', 'a copy', 'b copy'])
+    expect(undoDepth(store)).toBe(2)
+  })
+
+  it('複製之後載入另一份文件（切換專案）：貼上的元素畫在新文件上', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+    key('c', { ctrlKey: true })
+
+    store.loadSnapshot({ byId: { x: rect('x', { x: 500 }) }, rootIds: ['x'] })
+    await nextTick()
+    key('v', { ctrlKey: true })
+    await nextTick()
+    const pasted = selectedId(store)
+
+    expect(names(store)).toEqual(['x', 'a copy'])
+    expect(drawn(pasted)).toBe(true)
+    expect(drawn('a')).toBe(false)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('剪下群組 → 貼上：整棵子樹畫回畫布，名稱不變', async () => {
+    const store = await mountCanvas([rect('a'), rect('b', { x: 300 })])
+    const groupId = store.group(['a', 'b'])
+    await selectAndRender(store, groupId)
+
+    key('x', { ctrlKey: true })
+    await nextTick()
+    expect(Object.keys(store.byId)).toEqual([])
+
+    key('v', { ctrlKey: true })
+    await nextTick()
+    const pasted = store.get(selectedId(store))!
+
+    expect(pasted.name).toBe('Group')
+    expect(pasted.childIds.map((id) => store.get(id)!.name)).toEqual(['a', 'b'])
+    for (const id of [pasted.id, ...pasted.childIds]) expect(drawn(id)).toBe(true)
   })
 })

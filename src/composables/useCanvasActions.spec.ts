@@ -1719,6 +1719,31 @@ describe('useCanvasActions.cutSelected', () => {
       expect(drainUndo(store)).toEqual({ effective: 2, empty: 0 })
     })
 
+    it('只刪除真的寫進 Clipboard 的元素：選取裡不在文件樹上的孤兒不會被刪掉', () => {
+      // orphan 在 byId 裡，但不在 rootIds、也沒有父元素：複製核心走不到它。
+      store.loadSnapshot({ byId: { a: rect('a'), orphan: rect('orphan') }, rootIds: ['a'] })
+      select(store, ['a', 'orphan'])
+
+      cutSelected()
+
+      expect(allIds(store)).toEqual(['orphan'])
+      expect(Object.values(clipboard.read()!.elements.byId).map((el) => el.name)).toEqual(['a'])
+    })
+
+    it('剪下群組與它的子元素：Clipboard 與刪除範圍都是整個群組一次', () => {
+      const { g1 } = buildUngroupFixture(store)
+      const before = content(store)
+      select(store, ['a', g1])
+      const removeMany = vi.spyOn(store, 'removeMany')
+
+      cutSelected()
+
+      expect(removeMany).toHaveBeenCalledWith([g1])
+      expect(Object.keys(clipboard.read()!.elements.byId)).toHaveLength(3)
+      store.undo()
+      expect(content(store)).toBe(before)
+    })
+
     it('先把完整內容寫進 Clipboard，之後才刪除原件', () => {
       store.addAll([rect('a')])
       select(store, ['a'])
