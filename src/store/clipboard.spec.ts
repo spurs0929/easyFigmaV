@@ -43,50 +43,64 @@ describe('useClipboardStore', () => {
     expect(clipboard.read()).toBeNull()
   })
 
-  it('write 之後可以讀到帶版本號的內容，內容原封不動', () => {
-    const elements = tree('a', 'b')
+  it.each(['copy', 'cut'] as const)(
+    'write（%s）之後可以讀到帶版本號與來源的內容，內容原封不動',
+    (origin) => {
+      const elements = tree('a', 'b')
 
-    clipboard.write(elements)
+      clipboard.write(elements, origin)
 
-    expect(clipboard.read()).toEqual({ version: CLIPBOARD_FORMAT_VERSION, elements })
-    expect(clipboard.read()!.elements).toBe(elements)
-  })
+      expect(clipboard.read()).toEqual({ version: CLIPBOARD_FORMAT_VERSION, origin, elements })
+      expect(clipboard.read()!.elements).toBe(elements)
+    },
+  )
 
   it('內容不會被包成 reactive proxy', () => {
-    clipboard.write(tree('a'))
+    clipboard.write(tree('a'), 'copy')
 
     expect(isReactive(clipboard.read())).toBe(false)
     expect(isReactive(clipboard.read()!.elements)).toBe(false)
   })
 
-  it('新的 write 取代舊內容', () => {
-    clipboard.write(tree('a'))
+  it('新的 write 取代舊內容與來源', () => {
+    clipboard.write(tree('a'), 'cut')
     const second = tree('b')
 
-    clipboard.write(second)
+    clipboard.write(second, 'copy')
 
-    expect(clipboard.read()!.elements).toBe(second)
+    expect(clipboard.read()).toMatchObject({ origin: 'copy', elements: second })
   })
 
-  it('recordPaste 從 1 開始逐次遞增；新的 write 歸零', () => {
-    clipboard.write(tree('a'))
-    expect([clipboard.recordPaste(), clipboard.recordPaste(), clipboard.recordPaste()]).toEqual([
-      1, 2, 3,
-    ])
+  it('nextPasteNumber 只讀取、不改變計數；recordPaste 之後才前進', () => {
+    clipboard.write(tree('a'), 'copy')
 
-    clipboard.write(tree('b'))
-    expect(clipboard.recordPaste()).toBe(1)
+    expect([clipboard.nextPasteNumber(), clipboard.nextPasteNumber()]).toEqual([1, 1])
+    clipboard.recordPaste()
+    expect(clipboard.nextPasteNumber()).toBe(2)
+    clipboard.recordPaste()
+    clipboard.recordPaste()
+    expect(clipboard.nextPasteNumber()).toBe(4)
+  })
+
+  it('新的 write 讓貼上次數歸零', () => {
+    clipboard.write(tree('a'), 'copy')
+    clipboard.recordPaste()
+    clipboard.recordPaste()
+
+    clipboard.write(tree('b'), 'cut')
+
+    expect(clipboard.nextPasteNumber()).toBe(1)
   })
 
   it('clear 清空內容；之後再 write，貼上次數從 1 開始', () => {
-    clipboard.write(tree('a'))
+    clipboard.write(tree('a'), 'copy')
     clipboard.recordPaste()
     clipboard.recordPaste()
 
     clipboard.clear()
 
     expect(clipboard.read()).toBeNull()
-    clipboard.write(tree('a'))
-    expect(clipboard.recordPaste()).toBe(1)
+    clipboard.write(tree('a'), 'copy')
+    expect(clipboard.nextPasteNumber()).toBe(1)
   })
 })

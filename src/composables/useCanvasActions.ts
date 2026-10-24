@@ -1,4 +1,4 @@
-import { useClipboardStore } from '@/store/clipboard'
+import { useClipboardStore, type ClipboardOrigin } from '@/store/clipboard'
 import { useElementStore } from '@/store/element'
 import { duplicateElements, type DuplicateResult } from '@/types/duplicate'
 import { ElementKind, type ElementStore } from '@/types/element'
@@ -93,42 +93,74 @@ export function useCanvasActions() {
    * 或切換到別的專案，都不影響貼上的結果。沒有任何可複製的元素時保留 Clipboard 原本的內容。
    */
   function copySelected(): void {
+    writeSelectionToClipboard('copy')
+  }
+
+  /**
+   * 剪下目前選取的元素（Ctrl/Cmd+X）：先把完整內容寫進 Clipboard，成功後才刪除原件。
+   *
+   * 刪除用 removeMany，整批是一筆 undo；Undo 剪下會完整恢復原件，Clipboard 不變。
+   * 剪下的內容貼上時保留原名（見 pasteClipboard）。沒有任何可剪下的元素時，
+   * 不改 Clipboard、文件與 history。
+   */
+  function cutSelected(): void {
+    const ids = [...elementStore.selectedIds]
+    if (!writeSelectionToClipboard('cut')) return
+    elementStore.removeMany(ids)
+  }
+
+  /**
+   * 用複製核心把目前的選取整理成一棵自成一體的樹寫進 Clipboard（見 ClipboardPayload）。
+   * 沒有任何可複製的元素時不寫入、保留原本的內容，回傳 false。
+   */
+  function writeSelectionToClipboard(origin: ClipboardOrigin): boolean {
     const { elements, rootIds } = duplicateElements(
       currentDocument(),
       [...elementStore.selectedIds],
       { offset: { x: 0, y: 0 }, rename: (name) => name },
     )
-    if (elements.length === 0) return
-    clipboardStore.write({ byId: Object.fromEntries(elements.map((el) => [el.id, el])), rootIds })
+    if (elements.length === 0) return false
+    clipboardStore.write(
+      { byId: Object.fromEntries(elements.map((el) => [el.id, el])), rootIds },
+      origin,
+    )
+    return true
   }
 
   /**
    * 貼上 Clipboard 的內容（Ctrl/Cmd+V），整批是一筆 undo。
    *
    * 每次貼上都重新產生全新的 id，所以同一份內容可以重複貼上，而且與原件、與之前貼上的
-   * 都不共用任何元素。頂層名稱加上「 copy」（與 Ctrl+D 一致）；位置是複製時的絕對座標，
-   * 第 n 次貼上往右下錯開 n × (10, 10)。完成後只選取貼上的頂層元素。
+   * 都不共用任何元素。複製來的內容頂層名稱加上「 copy」（與 Ctrl+D 一致），剪下來的
+   * 內容保留原名；位置是複製或剪下時的絕對座標，第 n 次貼上往右下錯開 n × (10, 10)。
+   * 完成後只選取貼上的頂層元素。
    *
-   * Clipboard 是空的時候什麼都不做。Undo / Redo 不會改變 Clipboard。
+   * 真的加進文件之後才記下貼上次數。Clipboard 是空的時候什麼都不做。
+   * Undo / Redo 不會改變 Clipboard。
    */
   function pasteClipboard(): void {
     const payload = clipboardStore.read()
     if (!payload) return
-    const n = clipboardStore.recordPaste()
-    insertCopies(
+    const n = clipboardStore.nextPasteNumber()
+    const inserted = insertCopies(
       duplicateElements(payload.elements, payload.elements.rootIds, {
         offset: { x: DUPLICATE_OFFSET.x * n, y: DUPLICATE_OFFSET.y * n },
-        rename: copyName,
+        rename: payload.origin === 'cut' ? (name) => name : copyName,
       }),
     )
+    if (inserted) clipboardStore.recordPaste()
   }
 
-  /** 把複製核心的結果一次加入文件（一筆 undo），並只選取頂層的新元素。 */
-  function insertCopies({ elements, rootIds }: DuplicateResult): void {
-    if (elements.length === 0) return
+  /**
+   * 把複製核心的結果一次加入文件（一筆 undo），並只選取頂層的新元素。
+   * 結果是空的時候不動文件，回傳 false。
+   */
+  function insertCopies({ elements, rootIds }: DuplicateResult): boolean {
+    if (elements.length === 0) return false
     elementStore.addAll(elements)
     elementStore.clearSelection()
     for (const id of rootIds) elementStore.select(id, true)
+    return true
   }
 
   return {
@@ -137,6 +169,7 @@ export function useCanvasActions() {
     ungroupSelected,
     duplicateSelected,
     copySelected,
+    cutSelected,
     pasteClipboard,
   }
 }

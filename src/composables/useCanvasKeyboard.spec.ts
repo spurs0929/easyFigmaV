@@ -136,6 +136,7 @@ function createKeyboard(initial: GestureState = { kind: 'idle' }) {
     deleteSelected: vi.fn(),
     duplicateSelected: vi.fn(),
     copySelected: vi.fn(),
+    cutSelected: vi.fn(),
     pasteClipboard: vi.fn(),
     groupSelected: vi.fn(),
     ungroupSelected: vi.fn(),
@@ -386,6 +387,7 @@ describe('useCanvasKeyboard：Undo / Redo 與進行中的手勢', () => {
 type DocumentAction =
   | 'delete'
   | 'duplicate'
+  | 'cut'
   | 'paste'
   | 'group'
   | 'ungroup'
@@ -404,6 +406,8 @@ const DOCUMENT_SHORTCUTS: DocumentShortcut[] = [
   { label: 'Backspace', init: { key: 'Backspace' }, action: 'delete' },
   { label: 'Ctrl+D', init: { key: 'd', ctrlKey: true }, action: 'duplicate' },
   { label: 'Cmd+D', init: { key: 'd', metaKey: true }, action: 'duplicate' },
+  { label: 'Ctrl+X', init: { key: 'x', ctrlKey: true }, action: 'cut' },
+  { label: 'Cmd+X', init: { key: 'x', metaKey: true }, action: 'cut' },
   { label: 'Ctrl+V', init: { key: 'v', ctrlKey: true }, action: 'paste' },
   { label: 'Cmd+V', init: { key: 'v', metaKey: true }, action: 'paste' },
   { label: 'Ctrl+G', init: { key: 'g', ctrlKey: true }, action: 'group' },
@@ -440,6 +444,7 @@ describe('useCanvasKeyboard：刪除、複製、群組、圖層順序與進行�
     return {
       delete: spies.deleteSelected,
       duplicate: spies.duplicateSelected,
+      cut: spies.cutSelected,
       paste: spies.pasteClipboard,
       copy: spies.copySelected,
       group: spies.groupSelected,
@@ -552,7 +557,7 @@ describe('useCanvasKeyboard：刪除、複製、群組、圖層順序與進行�
   })
 })
 
-describe('useCanvasKeyboard：Ctrl/Cmd+C', () => {
+describe('useCanvasKeyboard：Ctrl/Cmd+C、Ctrl/Cmd+X 與反白文字', () => {
   let store: Store
 
   beforeEach(() => {
@@ -630,7 +635,37 @@ describe('useCanvasKeyboard：Ctrl/Cmd+C', () => {
     expect(spies.copySelected).toHaveBeenCalledTimes(1)
   })
 
-  it('反白文字只影響 Ctrl+C：Ctrl+V 照常貼上', () => {
+  it.each([
+    { label: 'Ctrl+X', init: { key: 'x', ctrlKey: true } },
+    { label: 'Cmd+X', init: { key: 'x', metaKey: true } },
+  ])('頁面上有反白的文字：$label 交給瀏覽器，不剪下畫布上的元素', (s) => {
+    selectPageText()
+    const { press, spies } = createKeyboard()
+
+    const event = press(s.init)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(spies.cutSelected).not.toHaveBeenCalled()
+    expect(ids(store)).toEqual(['a'])
+  })
+
+  it('反白的範圍是空的（只有游標）：Ctrl+X 照常剪下', () => {
+    const p = document.createElement('p')
+    p.textContent = '留言內容'
+    document.body.appendChild(p)
+    const range = document.createRange()
+    range.setStart(p.firstChild!, 1)
+    range.collapse(true)
+    window.getSelection()!.addRange(range)
+    const { press, spies } = createKeyboard()
+
+    const event = press({ key: 'x', ctrlKey: true })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(spies.cutSelected).toHaveBeenCalledTimes(1)
+  })
+
+  it('反白文字只影響 Ctrl+C / Ctrl+X：Ctrl+V 照常貼上', () => {
     selectPageText()
     const { press, spies } = createKeyboard()
 
@@ -650,6 +685,21 @@ describe('useCanvasKeyboard：Ctrl/Cmd+C', () => {
 
     expect(event.defaultPrevented).toBe(false)
     expect(spies.copySelected).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'Ctrl+X', init: { key: 'x', ctrlKey: true } },
+    { label: 'Cmd+X', init: { key: 'x', metaKey: true } },
+  ])('idle 時輸入框聚焦，$label 交給輸入框，不剪下畫布上的元素', (s) => {
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    const { press, spies } = createKeyboard()
+
+    const event = press(s.init)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(spies.cutSelected).not.toHaveBeenCalled()
   })
 
   it('Shift+Ctrl+C 不是複製', () => {

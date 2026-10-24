@@ -62,6 +62,7 @@ const {
   ungroupSelected,
   duplicateSelected,
   copySelected,
+  cutSelected,
   pasteClipboard,
 } = useCanvasActions()
 
@@ -77,6 +78,7 @@ const keyboard = useCanvasKeyboard({
   deleteSelected,
   duplicateSelected,
   copySelected,
+  cutSelected,
   pasteClipboard,
   groupSelected,
   ungroupSelected,
