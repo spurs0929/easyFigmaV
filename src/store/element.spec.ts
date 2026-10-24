@@ -1279,6 +1279,61 @@ describe('elementStore history', () => {
       expect(drainUndo(store)).toEqual({ effective: 2, empty: 0 })
     })
 
+    it('記下後經過 loadSnapshot（內容相同的空文件）：checkpoint 失效，不換回、不新增空白 History', () => {
+      const cp = store.checkpoint()
+      store.loadSnapshot({ byId: {}, rootIds: [] })
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      store.pushSnapshot()
+      expect(undoDepth(store)).toBe(0)
+    })
+
+    it('記下後經過 loadSnapshot（內容相同、有元素）：回傳 false，載入的文件保持原樣', () => {
+      store.loadSnapshot({ byId: { a: rect('a') }, rootIds: ['a'] })
+      const cp = store.checkpoint()
+      store.loadSnapshot({ byId: { a: rect('a') }, rootIds: ['a'] })
+      store.update('a', { x: 40 })
+      store.update('a', { x: 0 })
+
+      expect(store.restoreIfUnchanged(cp)).toBe(false)
+      expect(allIds(store)).toEqual(['a'])
+    })
+
+    it('loadSnapshot 之後才記下：checkpoint 照常有效，拖回原位不新增 History', () => {
+      store.loadSnapshot({ byId: { a: rect('a') }, rootIds: ['a'] })
+      store.loadSnapshot({ byId: { a: rect('a', { x: 5 }) }, rootIds: ['a'] })
+
+      const restored = gesture(() => {
+        store.update('a', { x: 60 })
+        store.update('a', { x: 5 })
+      })
+
+      expect(restored).toBe(true)
+      expect(undoDepth(store)).toBe(0)
+    })
+
+    it('記下後經過 Undo / Redo：checkpoint 仍有效（只有 loadSnapshot 會讓它失效）', () => {
+      store.add(rect('a'))
+      store.commitUpdate('a', { x: 30 })
+      const cp = store.checkpoint()
+      store.undo()
+      store.redo()
+
+      expect(store.restoreIfUnchanged(cp)).toBe(true)
+      store.pushSnapshot()
+      expect(undoDepth(store)).toBe(2)
+    })
+
+    it('記下後推過一筆 History 又改回：checkpoint 仍有效（只有 loadSnapshot 會讓它失效）', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.commitUpdate('a', { x: 50 })
+      store.update('a', { x: 0 })
+
+      expect(store.restoreIfUnchanged(cp)).toBe(true)
+      expect(store.get('a')!.x).toBe(0)
+    })
+
     it('Undo 之後記下、拖回原位：Undo 後的位置不變、Redo 保留', () => {
       store.add(rect('a'))
       store.commitUpdate('a', { x: 30 })

@@ -23,6 +23,13 @@ declare const checkpointBrand: unique symbol
  */
 export type ElementStoreCheckpoint = { readonly [checkpointBrand]: true }
 
+/** checkpoint 的實際內容，只在 store 內部使用。 */
+interface CheckpointData {
+  store: ElementStore
+  /** 記下時的 history 世代；loadSnapshot 重設 history 後，舊 checkpoint 一律失效。 */
+  epoch: number
+}
+
 /** 兩個值相同：物件先 toRaw 再比參考，避免 reactive proxy 與原始物件被當成不同。 */
 function _sameValue(a: unknown, b: unknown): boolean {
   return toRaw(a) === toRaw(b)
@@ -67,6 +74,8 @@ export const useElementStore = defineStore('element', () => {
   // History 不需響應式；直接用普通陣列，避免 Pinia 追蹤大量快照
   let _history: ElementStore[] = [_initialStore]
   let _historyIndex: number = 0
+  // history 的世代。loadSnapshot 重設 history 時遞增，讓重設前記下的 checkpoint 失效。
+  let _historyEpoch = 0
 
   // ── Public Computed ────────────────────────────────────────────────────────
 
@@ -547,11 +556,13 @@ export const useElementStore = defineStore('element', () => {
   /**
    * 記下目前的 store 物件，供手勢結束時用 restoreIfUnchanged 判斷「有沒有真的改過」。
    *
-   * 回傳的是 store 物件本身（不是拷貝）：store 物件不可變，之後的變更都會換成新物件，
-   * 所以它會一直代表記下當時的文件。呼叫端只能把它原封不動傳回 restoreIfUnchanged。
+   * 記下的是 store 物件本身（不是拷貝）：store 物件不可變，之後的變更都會換成新物件，
+   * 所以它會一直代表記下當時的文件。另外記下 history 的世代，見 restoreIfUnchanged。
+   * 呼叫端只能把它原封不動傳回 restoreIfUnchanged。
    */
   function checkpoint(): ElementStoreCheckpoint {
-    return toRaw(_store.value) as unknown as ElementStoreCheckpoint
+    const data: CheckpointData = { store: toRaw(_store.value), epoch: _historyEpoch }
+    return data as unknown as ElementStoreCheckpoint
   }
 
   /**
@@ -568,10 +579,18 @@ export const useElementStore = defineStore('element', () => {
    * 只要有任何一處不同就視為已變更。這可能把「內容其實相同」誤判成已變更（只會多一筆
    * history，與修改前相同），但不會把真的有變更的狀態換掉。
    *
+   * checkpoint 只在記下它的那一段 history 裡有效：期間若經過 loadSnapshot（載入、重新載入、
+   * 離開雲端專案），history 已經重設，舊 checkpoint 不再是 history 裡的任何一筆。這時
+   * 即使內容相同也不換回（回傳 false），否則換回的物件與新 history 的基準參考不同，
+   * 接著的 pushSnapshot 反而會多推一筆空白 history。
+   *
    * 不呼叫 _touchDocument：換回的內容與目前完全相同，畫面與存檔內容都不會因此改變。
+   * 但這只代表「換回」這一步不觸發存檔；手勢過程的 update() 已經遞增過 documentRevision，
+   * 自動存檔仍可能被排程（存的內容與原本相同）。
    */
   function restoreIfUnchanged(cp: ElementStoreCheckpoint): boolean {
-    const base = cp as unknown as ElementStore
+    const { store: base, epoch } = cp as unknown as CheckpointData
+    if (epoch !== _historyEpoch) return false
     const current = toRaw(_store.value)
     if (current === base) return true
     if (!_isShallowEquivalent(base, current)) return false
@@ -633,6 +652,7 @@ export const useElementStore = defineStore('element', () => {
     _store.value = nextStore
     _selectedIds.value = new Set()
     _history = [nextStore]
+    _historyEpoch++
     _historyIndex = 0
     assertStoreIntegrity(_store.value)
     _touchDocument()
