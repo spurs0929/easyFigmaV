@@ -2,7 +2,7 @@
 
 這個目錄記錄 easyFigmaV
 目前主要的後端、前端持久化、認證、授權、WebSocket、CI 與 observability
-設計。
+設計，以及編輯器的狀態、Undo / Redo 與手勢生命週期。
 
 文件重點不是逐 commit 的開發歷程，而是：
 
@@ -27,6 +27,7 @@
 11. [WebSocket Presence](11-websocket-presence.md)
 12. [Comments](12-comments.md)
 13. [v1 Architecture and Boundaries](13-v1-architecture.md)
+14. [Editor State, Undo / Redo and Gesture Lifecycle](14-editor-history-and-gestures.md)
 
 ## Architecture at a Glance
 
