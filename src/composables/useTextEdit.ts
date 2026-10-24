@@ -1,6 +1,6 @@
 import { ref, computed, nextTick } from 'vue'
 import type { Ref } from 'vue'
-import { useElementStore } from '@/store/element'
+import { useElementStore, type ElementStoreCheckpoint } from '@/store/element'
 import { useViewportStore } from '@/store/viewport'
 import {
   type CanvasElement,
@@ -40,6 +40,18 @@ export function useTextEdit(
   let _editOldText = ''
   const editingTextDraft = ref('')
   let _pendingTextEditTimer: number | null = null
+  /**
+   * 新建、還沒進 History 的文字元素 id → 放進 store 之前記下的 checkpoint。
+   *
+   * 新建文字的「建立 + 第一次編輯」是使用者的一次操作：建立時不推 History，
+   * 編輯結束時有內容才推一筆；留空離開或按 Escape 就連元素一起取消，不留下任何 History。
+   */
+  const _pendingCreations = new Map<string, ElementStoreCheckpoint>()
+  /**
+   * 這次編輯開始時的 checkpoint，用來發現編輯期間文件被整份換掉（loadSnapshot）。
+   * 結束編輯不清空：只有編輯中（editingTextId 有值）才會讀它，而每次開始編輯都會重新記下。
+   */
+  let _editCheckpoint: ElementStoreCheckpoint | null = null
 
   function absoluteCoords(el: CanvasElement): CanvasElement {
     if (!el.parentId) return el
@@ -103,6 +115,43 @@ export function useTextEdit(
     onBatchDraw()
   }
 
+  /**
+   * 取消一個還沒進 History 的新建文字。
+   *
+   * 只拿掉這個元素，不把整份文件換回 checkpoint，期間若有其他還沒記錄的修改也會保留。
+   * 依 checkpoint 之後 History 的變化處理：
+   * - 'none'：沒有任何一筆 History 包含它，安靜拿掉；再試著換回建立前的 store 物件，
+   *   讓之後的 pushSnapshot 能以參考去重（內容不同就不換，其他修改照樣保留）。
+   * - 'moved'：期間有其他 History 寫入，它可能已經被一起記進去；刪除也要記成一筆，
+   *   否則 Undo / Redo 會讓它回來而且無法再撤銷。被 Undo 換掉的話它已不存在，remove 不做事。
+   * - 'reset'：文件已經整份換掉，不能動新文件。
+   */
+  function _discardCreation(id: string, cp: ElementStoreCheckpoint): void {
+    const change = elementStore.historyChangeSince(cp)
+    if (change === 'reset') return
+    if (change === 'moved') {
+      elementStore.remove(id)
+      return
+    }
+    elementStore.removeWithoutHistory(id)
+    elementStore.restoreIfUnchanged(cp)
+  }
+
+  /** 取消所有還沒開始編輯就被取代的新建文字；keepId 是接著要編輯的那一個。 */
+  function _discardPendingCreations(keepId: string): void {
+    for (const [id, cp] of _pendingCreations) {
+      if (id === keepId) continue
+      _pendingCreations.delete(id)
+      _discardCreation(id, cp)
+    }
+  }
+
+  function _takePendingCreation(id: string): ElementStoreCheckpoint | undefined {
+    const cp = _pendingCreations.get(id)
+    _pendingCreations.delete(id)
+    return cp
+  }
+
   function startTextEdit(elId: string): void {
     if (_pendingTextEditTimer !== null) {
       window.clearTimeout(_pendingTextEditTimer)
@@ -120,9 +169,11 @@ export function useTextEdit(
     // 若有正在進行的編輯，先 commit 避免靜默丟棄。
     // 切換到另一個 Text 時必須強制結束當前 session，不能被初始 blur 保護擋下。
     if (editingTextId.value !== null) commitTextEdit()
+    _discardPendingCreations(elId)
 
     const el = elementStore.get(elId)
     if (!el || el.kind !== ElementKind.Text) return
+    _editCheckpoint = elementStore.checkpoint()
 
     // 對使用者來說，畫布上看到的是 renderer 的顯示值；編輯框也要以相同內容開啟，
     // 否則新建 Text 會顯示為空白、甚至在焦點抖動時像是直接消失。
@@ -148,11 +199,19 @@ export function useTextEdit(
   function commitTextEdit(): void {
     const id = editingTextId.value
     if (!id) return
+    const creation = _takePendingCreation(id)
+    // 編輯期間文件被整份換掉（重新載入）：草稿屬於舊文件，不寫進新文件。
+    if (_editCheckpoint && elementStore.historyChangeSince(_editCheckpoint) === 'reset') {
+      _exitTextEdit()
+      return
+    }
     const newText = editingTextDraft.value
     const trimmedText = newText.trim()
     if (trimmedText.length === 0 && elementStore.get(id)) {
       _exitTextEdit()
-      elementStore.remove(id)
+      // 新建文字留空：取消整個建立，不留 History；既有文字清空：刪除，記一筆。
+      if (creation) _discardCreation(id, creation)
+      else elementStore.remove(id)
       return
     }
     // 只在文字實際改變且元素仍存在時才更新 store 並推 snapshot
@@ -165,6 +224,7 @@ export function useTextEdit(
 
   /**
    * Escape 取消：不寫入 store，保持 _editOldText（進入編輯前的狀態）。
+   * 新建文字進入編輯前還不存在，所以取消的是整個建立：元素一併拿掉，不留 History。
    * 前提：見 _editOldText 的 ⚠️ 說明。
    * Escape → cancelTextEdit → _exitTextEdit（清空 id）→ Vue flush → 移除 textarea
    * → blur → commitTextEdit 被守衛攔截。路徑安全，不需額外 flag。
@@ -172,15 +232,20 @@ export function useTextEdit(
   function cancelTextEdit(): void {
     const id = editingTextId.value
     if (!id) return
+    const creation = _takePendingCreation(id)
     _exitTextEdit()
+    if (creation) _discardCreation(id, creation)
   }
 
   function scheduleTextEdit(elId: string): void {
     // 新建文字後若只用 nextTick，常會撞上同一次 click 的後續事件，
     // 使 textarea 剛 focus 又立刻 blur。延到下一個 macrotask 再進入編輯可避開這個焦點競爭。
     if (_pendingTextEditTimer !== null) window.clearTimeout(_pendingTextEditTimer)
+    const cp = elementStore.checkpoint()
     _pendingTextEditTimer = window.setTimeout(() => {
       _pendingTextEditTimer = null
+      // 排程之後文件被整份換掉：這個 id 屬於舊文件，不能在新文件上開始編輯。
+      if (elementStore.historyChangeSince(cp) === 'reset') return
       startTextEdit(elId)
     }, 0)
   }
@@ -191,6 +256,16 @@ export function useTextEdit(
     elementStore.select(selectId)
     onSuppressNextClick()
     scheduleTextEdit(elId)
+  }
+
+  /**
+   * 放入新建的文字元素，但先不記 History（見 _pendingCreations）。
+   * 之後要接著 beginTextEdit / scheduleTextEdit 進入編輯，由編輯結束決定記一筆或整個取消。
+   */
+  function insertNewText(el: CanvasElement): void {
+    const cp = elementStore.checkpoint()
+    elementStore.insertWithoutHistory(el)
+    _pendingCreations.set(el.id, cp)
   }
 
   function createTextElementAt(world: Point): CanvasElement {
@@ -258,6 +333,7 @@ export function useTextEdit(
     scheduleTextEdit,
     beginTextEdit,
     createTextElementAt,
+    insertNewText,
     onTextareaBlur,
     onTextareaKeydown,
     onTextareaInput,

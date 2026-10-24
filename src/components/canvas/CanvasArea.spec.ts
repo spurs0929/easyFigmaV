@@ -1675,3 +1675,125 @@ describe('CanvasArea：Copy／Cut／Paste 整合（Batch 4）', () => {
     for (const id of [pasted.id, ...pasted.childIds]) expect(drawn(id)).toBe(true)
   })
 })
+
+// ── 文字編輯的 History（#8）────────────────────────────────────────────────────
+
+describe('CanvasArea：新建文字的 History（#8）', () => {
+  const overlay = () => document.querySelector<HTMLTextAreaElement>('.text-edit-overlay')
+
+  /** 用 Text 工具在空白處點一下，等延後的進入編輯與 textarea 掛載跑完。 */
+  async function createTextAt(x: number, y: number) {
+    useToolStore().setTool(ToolType.Text)
+    await nextTick()
+    press(x, y)
+    releaseOnStage(x, y)
+    await macrotask()
+    await nextTick()
+  }
+
+  function typeText(value: string) {
+    const ta = overlay()!
+    ta.value = value
+    ta.dispatchEvent(new Event('input'))
+  }
+
+  const blurText = () => overlay()!.dispatchEvent(new FocusEvent('blur'))
+  const escapeText = () =>
+    overlay()!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    )
+
+  const texts = (store: Store) => Object.values(store.byId).map((el) => el.text)
+
+  it('新增文字並輸入後離開：只有一筆 Undo，一次 Ctrl+Z 回到空畫布', async () => {
+    const store = await mountCanvas()
+    await createTextAt(300, 200)
+    typeText('abc')
+    blurText()
+    await nextTick()
+
+    expect(texts(store)).toEqual(['abc'])
+    expect(undoDepth(store)).toBe(1)
+
+    pressUndo()
+    expect(Object.keys(store.byId)).toEqual([])
+    pressRedo()
+    expect(texts(store)).toEqual(['abc'])
+  })
+
+  it('新增文字留空離開：不留下元素也不產生 History，Undo 不會讓空 Text 復活', async () => {
+    const store = await mountCanvas([rect('a')])
+    await createTextAt(500, 400)
+    blurText()
+    await nextTick()
+
+    expect(Object.keys(store.byId)).toEqual(['a'])
+    expect(undoDepth(store)).toBe(0)
+
+    pressUndo()
+    expect(Object.keys(store.byId)).toEqual(['a'])
+  })
+
+  it('繪製路徑建立的文字（拖曳中切到 Text 工具）：同樣只有一筆 Undo', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Rect)
+    await nextTick()
+    press(300, 200)
+    move(400, 260)
+    useToolStore().setTool(ToolType.Text)
+    releaseOnStage(400, 260)
+    await nextTick()
+    await macrotask()
+    await nextTick()
+
+    expect(overlay()).not.toBeNull()
+    typeText('abc')
+    blurText()
+    await nextTick()
+
+    expect(texts(store)).toEqual(['abc'])
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('既有文字用 Text 工具點擊進入編輯：修改只記一筆，Escape 還原且零筆', async () => {
+    const existing: CanvasElement = { ...rect('x'), kind: ElementKind.Text, text: 'hi', width: 200 }
+    const store = await mountCanvas([existing])
+    useToolStore().setTool(ToolType.Text)
+    await nextTick()
+    press(150, 105)
+    releaseOnStage(150, 105)
+    await macrotask()
+    await nextTick()
+
+    expect(overlay()!.value).toBe('hi')
+    typeText('hey')
+    blurText()
+    await nextTick()
+    expect(texts(store)).toEqual(['hey'])
+    expect(undoDepth(store)).toBe(1)
+
+    useToolStore().setTool(ToolType.Text)
+    await nextTick()
+    press(150, 105)
+    releaseOnStage(150, 105)
+    await macrotask()
+    await nextTick()
+    typeText('changed')
+    escapeText()
+    await nextTick()
+    expect(texts(store)).toEqual(['hey'])
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('新增文字輸入後按 Escape：取消建立，不留下隱形的空 Text', async () => {
+    const store = await mountCanvas()
+    await createTextAt(300, 200)
+    typeText('abc')
+    escapeText()
+    await nextTick()
+
+    expect(overlay()).toBeNull()
+    expect(Object.keys(store.byId)).toEqual([])
+    expect(undoDepth(store)).toBe(0)
+  })
+})

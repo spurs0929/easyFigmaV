@@ -1349,4 +1349,143 @@ describe('elementStore history', () => {
       expect(store.get('a')!.x).toBe(30)
     })
   })
+
+  describe('insertWithoutHistory / removeWithoutHistory / historyChangeSince（新建文字，#8）', () => {
+    it('insertWithoutHistory：放進文件、遞增 documentRevision，但不推 History', () => {
+      store.add(rect('a'))
+      const revision = store.documentRevision
+      store.insertWithoutHistory(rect('b'))
+
+      expect(allIds(store)).toEqual(['a', 'b'])
+      expect(rootOrder(store)).toEqual(['a', 'b'])
+      expect(store.documentRevision).toBe(revision + 1)
+      store.undo()
+      expect(allIds(store)).toEqual([])
+    })
+
+    it('insertWithoutHistory：有 parentId 時掛到父元素', () => {
+      store.add(rect('p'))
+      store.insertWithoutHistory(rect('c', { parentId: 'p' }))
+
+      expect(store.get('p')!.childIds).toEqual(['c'])
+      expect(rootOrder(store)).toEqual(['p'])
+    })
+
+    it('insertWithoutHistory 不清掉 Redo', () => {
+      store.add(rect('a'))
+      store.undo()
+      store.insertWithoutHistory(rect('b'))
+
+      expect(drainRedo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+
+    it('removeWithoutHistory：拿掉元素、移出選取、遞增 documentRevision，但不推 History', () => {
+      store.add(rect('a'))
+      store.insertWithoutHistory(rect('b'))
+      store.select('b')
+      const revision = store.documentRevision
+      store.removeWithoutHistory('b')
+
+      expect(allIds(store)).toEqual(['a'])
+      expect(store.selectedIds.has('b')).toBe(false)
+      expect(store.documentRevision).toBe(revision + 1)
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+
+    it('insertWithoutHistory 與 add 一樣檢查樹結構：父元素不存在時報錯', () => {
+      expect(() => store.insertWithoutHistory(rect('c', { parentId: 'missing' }))).toThrow(
+        /parentId "missing"/,
+      )
+    })
+
+    it('removeWithoutHistory 與 remove 一樣檢查樹結構：刪除後留下懸空的 childIds 時報錯', () => {
+      // x 的 childIds 也列了 c，但 c 的 parentId 是 a：載入時檢查不到，刪掉 a 的子樹後才會露出來
+      store.loadSnapshot({
+        byId: {
+          a: rect('a', { childIds: ['c'] }),
+          c: rect('c', { parentId: 'a' }),
+          x: rect('x', { childIds: ['c'] }),
+        },
+        rootIds: ['a', 'x'],
+      })
+
+      expect(() => store.removeWithoutHistory('a')).toThrow(/childIds 包含不存在的 id "c"/)
+    })
+
+    it('removeWithoutHistory：元素不存在時完全不動', () => {
+      store.add(rect('a'))
+      const revision = store.documentRevision
+      store.removeWithoutHistory('missing')
+
+      expect(allIds(store)).toEqual(['a'])
+      expect(store.documentRevision).toBe(revision)
+    })
+
+    it('remove 仍然推一筆 History', () => {
+      store.add(rect('a'))
+      store.remove('a')
+
+      expect(drainUndo(store)).toEqual({ effective: 2, empty: 0 })
+    })
+
+    it('historyChangeSince：期間只有不推 History 的寫入時是 none', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.insertWithoutHistory(rect('b'))
+      store.update('a', { x: 5 })
+
+      expect(store.historyChangeSince(cp)).toBe('none')
+    })
+
+    it('historyChangeSince：記下 checkpoint 時已有還沒記錄的修改，仍以 History 位置判斷', () => {
+      store.add(rect('a'))
+      store.update('a', { x: 5 })
+      const cp = store.checkpoint()
+
+      expect(store.historyChangeSince(cp)).toBe('none')
+      store.pushSnapshot()
+      expect(store.historyChangeSince(cp)).toBe('moved')
+    })
+
+    it('historyChangeSince：期間推過 History 時是 moved', () => {
+      const cp = store.checkpoint()
+      store.add(rect('a'))
+
+      expect(store.historyChangeSince(cp)).toBe('moved')
+    })
+
+    it('historyChangeSince：期間 Undo 過時是 moved', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.undo()
+
+      expect(store.historyChangeSince(cp)).toBe('moved')
+    })
+
+    it('historyChangeSince：History 已滿時再推一筆也是 moved', () => {
+      for (let i = 0; i < ELEMENT_HISTORY_MAX + 1; i++) store.add(rect(`r${i}`))
+      const cp = store.checkpoint()
+      store.add(rect('last'))
+
+      expect(store.historyChangeSince(cp)).toBe('moved')
+    })
+
+    it('historyChangeSince：期間經過 loadSnapshot 時是 reset', () => {
+      const cp = store.checkpoint()
+      store.loadSnapshot({ byId: {}, rootIds: [] })
+
+      expect(store.historyChangeSince(cp)).toBe('reset')
+    })
+
+    it('取消新建：removeWithoutHistory 後 restoreIfUnchanged 換回原物件，之後的 pushSnapshot 不多推', () => {
+      store.add(rect('a'))
+      const cp = store.checkpoint()
+      store.insertWithoutHistory(rect('b'))
+      store.removeWithoutHistory('b')
+
+      expect(store.restoreIfUnchanged(cp)).toBe(true)
+      store.pushSnapshot()
+      expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
+    })
+  })
 })

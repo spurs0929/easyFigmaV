@@ -19,15 +19,28 @@ declare const checkpointBrand: unique symbol
 
 /**
  * elementStore.checkpoint() 的回傳值。刻意做成不透明的型別：呼叫端只能保存它、
- * 原封不動交回 restoreIfUnchanged，不能讀取或修改裡面的文件內容。
+ * 原封不動交回 restoreIfUnchanged / historyChangeSince，不能讀取或修改裡面的文件內容。
  */
 export type ElementStoreCheckpoint = { readonly [checkpointBrand]: true }
+
+/**
+ * historyChangeSince 的結果：
+ * - 'none'：同一個 history 世代，目前位置仍是記下 checkpoint 時的那一筆（期間沒有 push、undo、redo）
+ * - 'moved'：同一個 history 世代，但 history 位置已經變了
+ * - 'reset'：期間經過 loadSnapshot，文件與 history 都已整份換掉
+ */
+export type HistoryChange = 'none' | 'moved' | 'reset'
 
 /** checkpoint 的實際內容，只在 store 內部使用。 */
 interface CheckpointData {
   store: ElementStore
   /** 記下時的 history 世代；loadSnapshot 重設 history 後，舊 checkpoint 一律失效。 */
   epoch: number
+  /**
+   * 記下時 history 目前位置的那一筆。push、undo、redo 都會讓目前位置換成別的物件；
+   * 唯一例外是 undo 之後再 redo 回到同一筆，這時文件也已經被換回那一筆的內容。
+   */
+  head: ElementStore
 }
 
 /** 兩個值相同：物件先 toRaw 再比參考，避免 reactive proxy 與原始物件被當成不同。 */
@@ -123,6 +136,26 @@ export const useElementStore = defineStore('element', () => {
 
   /** 新增單一元素，若有 parentId 則自動掛載至父節點。 */
   function add(el: CanvasElement): void {
+    _insert(el)
+    _pushSnapshot()
+    assertStoreIntegrity(_store.value)
+    _touchDocument()
+  }
+
+  /**
+   * 同 add，但不推 undo 快照。
+   *
+   * 用於「建立之後還要經過一段編輯，整段才算一次操作」的元素（新建文字）：
+   * 編輯結束時由呼叫端決定推一筆（pushSnapshot），或用 removeWithoutHistory 取消。
+   * 呼叫前應先記下 checkpoint，取消時才能判斷 history 有沒有在期間被動過。
+   */
+  function insertWithoutHistory(el: CanvasElement): void {
+    _insert(el)
+    assertStoreIntegrity(_store.value)
+    _touchDocument()
+  }
+
+  function _insert(el: CanvasElement): void {
     const s = _store.value
     const newById: Record<string, CanvasElement> = { ...s.byId, [el.id]: el }
 
@@ -137,10 +170,6 @@ export const useElementStore = defineStore('element', () => {
       byId: newById,
       rootIds: el.parentId ? s.rootIds : [...s.rootIds, el.id],
     }
-
-    _pushSnapshot()
-    assertStoreIntegrity(_store.value)
-    _touchDocument()
   }
 
   /**
@@ -170,9 +199,27 @@ export const useElementStore = defineStore('element', () => {
    * 同時從 selectedIds 移除已刪除的 id。
    */
   function remove(id: string): void {
+    if (!_removeSubtree(id)) return
+    _pushSnapshot()
+    assertStoreIntegrity(_store.value)
+    _touchDocument()
+  }
+
+  /**
+   * 同 remove，但不推 undo 快照。只用來取消 insertWithoutHistory 放進來、
+   * 還沒進 history 的元素；只動這個元素（與其子樹），文件其他部分保持原樣。
+   */
+  function removeWithoutHistory(id: string): void {
+    if (!_removeSubtree(id)) return
+    assertStoreIntegrity(_store.value)
+    _touchDocument()
+  }
+
+  /** 刪除元素與其子樹，並從 selectedIds 移除該 id。元素不存在時不動任何狀態並回傳 false。 */
+  function _removeSubtree(id: string): boolean {
     const s = _store.value
     const el = s.byId[id]
-    if (!el) return
+    if (!el) return false
 
     const newById = { ...s.byId }
 
@@ -204,10 +251,7 @@ export const useElementStore = defineStore('element', () => {
       next.delete(id)
       return next
     })()
-
-    _pushSnapshot()
-    assertStoreIntegrity(_store.value)
-    _touchDocument()
+    return true
   }
 
   /**
@@ -557,12 +601,31 @@ export const useElementStore = defineStore('element', () => {
    * 記下目前的 store 物件，供手勢結束時用 restoreIfUnchanged 判斷「有沒有真的改過」。
    *
    * 記下的是 store 物件本身（不是拷貝）：store 物件不可變，之後的變更都會換成新物件，
-   * 所以它會一直代表記下當時的文件。另外記下 history 的世代，見 restoreIfUnchanged。
-   * 呼叫端只能把它原封不動傳回 restoreIfUnchanged。
+   * 所以它會一直代表記下當時的文件。另外記下 history 的世代與目前位置，
+   * 見 restoreIfUnchanged、historyChangeSince。
+   * 呼叫端只能把它原封不動傳回 restoreIfUnchanged / historyChangeSince。
    */
   function checkpoint(): ElementStoreCheckpoint {
-    const data: CheckpointData = { store: toRaw(_store.value), epoch: _historyEpoch }
+    const data: CheckpointData = {
+      store: toRaw(_store.value),
+      epoch: _historyEpoch,
+      head: toRaw(_history[_historyIndex]),
+    }
     return data as unknown as ElementStoreCheckpoint
+  }
+
+  /**
+   * 記下 checkpoint 之後，history 有沒有被動過（見 HistoryChange）。
+   *
+   * 只回答 history，不回答文件內容：update() 不推 history，所以 'none' 不代表文件沒變。
+   * 用途是「還沒進 history 的變更」要取消時，判斷能不能安靜地取消：
+   * 'none' 表示這段期間沒有任何一筆 history 包含它；'moved' 表示它可能已經被其他操作
+   * 一起記進 history，取消也必須記成一筆；'reset' 表示文件已經整份換掉，不能再動。
+   */
+  function historyChangeSince(cp: ElementStoreCheckpoint): HistoryChange {
+    const { epoch, head } = cp as unknown as CheckpointData
+    if (epoch !== _historyEpoch) return 'reset'
+    return toRaw(_history[_historyIndex]) === head ? 'none' : 'moved'
   }
 
   /**
@@ -699,9 +762,11 @@ export const useElementStore = defineStore('element', () => {
     loadSnapshot,
     // CRUD
     add,
+    insertWithoutHistory,
     update,
     commitUpdate,
     remove,
+    removeWithoutHistory,
     removeMany,
     setAll,
     addAll,
@@ -721,6 +786,7 @@ export const useElementStore = defineStore('element', () => {
     pushSnapshot: _pushSnapshot,
     checkpoint,
     restoreIfUnchanged,
+    historyChangeSince,
     // Selection
     select,
     selectAll,

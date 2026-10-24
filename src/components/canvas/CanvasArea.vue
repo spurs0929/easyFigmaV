@@ -104,6 +104,7 @@ const {
   scheduleTextEdit,
   beginTextEdit,
   createTextElementAt,
+  insertNewText,
   onTextareaBlur,
   onTextareaKeydown,
   onTextareaInput,
@@ -1080,7 +1081,7 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
     if (e.target !== stage) return
 
     const newEl = createTextElementAt(world)
-    elementStore.add(newEl)
+    insertNewText(newEl)
     toolStore.setTool(ToolType.Move)
     beginTextEdit(newEl.id)
     return
@@ -1319,7 +1320,9 @@ function onMouseUp(releasedOnStage: boolean): void {
 
   if (g.kind === 'drawing') {
     const newEl = commitDraw(g, releasedOnStage ? pointerWorld() : g.current)
-    if (newEl) elementStore.add(newEl)
+    // 新建文字和接下來的第一次編輯合起來才是一次操作，History 等編輯結束再決定。
+    if (newEl?.kind === ElementKind.Text) insertNewText(newEl)
+    else if (newEl) elementStore.add(newEl)
     g.ghost.destroy()
     uiLayer.batchDraw()
     _gesture = { kind: 'idle' }
