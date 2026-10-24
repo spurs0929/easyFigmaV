@@ -23,7 +23,10 @@ alembic==1.14.0
 
 # Auth
 argon2-cffi==23.1.0
-pyjwt==2.10.1
+# >=2.14.0: a deeply nested token header raises DecodeError instead of leaking
+# an uncaught RecursionError (GHSA-8wjv-2p76-3863), which let an unauthenticated
+# request turn into a 500. Guarded by tests/test_access_token.py.
+pyjwt==2.15.1
 
 # --- Observability ---
 # structlog renders the app's own logs; stdlib logging records from uvicorn and

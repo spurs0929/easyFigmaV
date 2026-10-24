@@ -9,6 +9,7 @@ import pytest
 
 from app.core.config import settings
 from app.core.security import ALGORITHM
+from tests.test_access_token import deeply_nested_header_token
 
 URL = "/api/projects"
 
@@ -56,3 +57,18 @@ async def test_deleted_user_gets_401(client, make_user, auth, db_session):
     response = await client.get(URL, headers=headers)
 
     assert response.status_code == 401
+
+
+async def test_deeply_nested_header_gets_401_not_500(client):
+    """GHSA-8wjv-2p76-3863：未登入的請求不能用偽造的 token 打出 500。
+
+    打 /api/auth/me 而不是 URL：這是實際重現問題的端點。失敗時必須跟其他壞
+    token 一樣是 401 + WWW-Authenticate。
+    """
+    response = await client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {deeply_nested_header_token()}"},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
