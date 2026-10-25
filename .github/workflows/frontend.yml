@@ -47,8 +47,12 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
+          check-latest: true
           cache: npm
+
+      # 印出實際版本，確認至少是修補版 24.22.1（CVE-2026-111497）
+      - run: node -v
 
       - run: npm ci
 
