@@ -51,10 +51,12 @@ jobs:
           check-latest: true
           cache: npm
 
-      # 印出實際版本，確認至少是修補版 24.22.1（CVE-2026-111497）
+      # 印出實際版本，方便在 log 中確認
       - run: node -v
 
-      - run: npm ci
+      # --engine-strict：Node 版本不符合 package.json 的 engines（>=24.22.1 <25，
+      # CVE-2026-111497 修補版）時直接失敗，不再只是警告。版本只維護在 engines 一處。
+      - run: npm ci --engine-strict
 
       # 不帶 --fix：CI 只回報，不該在 runner 上偷偷改檔後判定通過
       - name: Lint
