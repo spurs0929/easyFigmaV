@@ -24,9 +24,11 @@ declare const checkpointBrand: unique symbol
 export type ElementStoreCheckpoint = { readonly [checkpointBrand]: true }
 
 /**
- * historyChangeSince 的結果：
- * - 'none'：同一個 history 世代，目前位置仍是記下 checkpoint 時的那一筆（期間沒有 push、undo、redo）
- * - 'moved'：同一個 history 世代，但 history 位置已經變了
+ * historyChangeSince 的結果。比較的是「現在」與記下 checkpoint 時的 history 位置，
+ * 不是記錄期間發生過什麼：
+ * - 'none'：同一個 history 世代，目前位置與記下時是同一筆。期間沒有 push、Undo、Redo 時
+ *   一定是這個；但 Undo 之後再 Redo 回到同一筆也是這個，所以它不代表期間 history 沒動過
+ * - 'moved'：同一個 history 世代，目前位置不是記下時那一筆（期間有 push，或停在 Undo / Redo 之後的別筆）
  * - 'reset'：期間經過 loadSnapshot，文件與 history 都已整份換掉
  */
 export type HistoryChange = 'none' | 'moved' | 'reset'

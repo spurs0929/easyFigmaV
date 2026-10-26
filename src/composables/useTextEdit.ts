@@ -172,7 +172,12 @@ export function useTextEdit(
     _discardPendingCreations(elId)
 
     const el = elementStore.get(elId)
-    if (!el || el.kind !== ElementKind.Text) return
+    if (!el || el.kind !== ElementKind.Text) {
+      // 這次編輯沒有開始，它的新建登記也要一起清掉：之後同一個 id 若再出現（例如 Redo），
+      // 它是文件裡的既有文字，不能再被當成新建來取消。
+      _pendingCreations.delete(elId)
+      return
+    }
     _editCheckpoint = elementStore.checkpoint()
 
     // 對使用者來說，畫布上看到的是 renderer 的顯示值；編輯框也要以相同內容開啟，
@@ -245,7 +250,11 @@ export function useTextEdit(
     _pendingTextEditTimer = window.setTimeout(() => {
       _pendingTextEditTimer = null
       // 排程之後文件被整份換掉：這個 id 屬於舊文件，不能在新文件上開始編輯。
-      if (elementStore.historyChangeSince(cp) === 'reset') return
+      // 新建登記也屬於舊文件，一併清掉；新文件裡同一個 id 的元素是既有文字。
+      if (elementStore.historyChangeSince(cp) === 'reset') {
+        _pendingCreations.delete(elId)
+        return
+      }
       startTextEdit(elId)
     }, 0)
   }

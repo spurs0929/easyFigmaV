@@ -324,6 +324,66 @@ describe('useTextEdit：非同步進入編輯與文件重新載入', () => {
     expect(textOf('x')).toBe('reloaded')
     expect(undoDepth()).toBe(0)
   })
+
+  /**
+   * 新建 t、進入編輯前文件被重新載入，而新文件裡也有 t（例如 autosave 已經把空的 t 存上去）。
+   * 這時的 t 是新文件裡的既有文字，不能沿用舊文件的新建登記。
+   */
+  function createThenReloadBeforeEditing(reloaded: string) {
+    load()
+    te.insertNewText(textEl('t', ''))
+    te.beginTextEdit('t')
+    load(textEl('t', reloaded))
+    vi.runAllTimers()
+    expect(te.editingTextId.value).toBeNull()
+  }
+
+  it('進入編輯前重新載入（情境 A）：同 id 的既有文字清空後照常刪除並記一筆', () => {
+    createThenReloadBeforeEditing('')
+    editExisting('t')
+    blur()
+
+    expect(ids()).toEqual([])
+    expect(undoDepth()).toBe(1)
+    store.undo()
+    expect(ids()).toEqual(['t'])
+  })
+
+  it('進入編輯前重新載入：之後同 id 的既有文字修改、再清空，都照既有文字記錄', () => {
+    createThenReloadBeforeEditing('old')
+    editExisting('t')
+    type('abc')
+    blur()
+    expect(textOf('t')).toBe('abc')
+    expect(undoDepth()).toBe(1)
+
+    editExisting('t')
+    type('')
+    blur()
+    expect(ids()).toEqual([])
+    expect(undoDepth()).toBe(2)
+  })
+
+  it('進入編輯前元素暫時不存在（情境 B）：Redo 回來後以既有文字按 Escape，保留元素、不新增 History', () => {
+    load()
+    te.insertNewText(textEl('t', ''))
+    te.beginTextEdit('t')
+    // 另一個操作推了 History，把還沒提交的 t 一起記進去；Undo 讓 t 暫時消失
+    store.add(rect('r'))
+    store.undo()
+    vi.runAllTimers()
+    expect(te.editingTextId.value).toBeNull()
+
+    store.redo()
+    expect(ids().sort()).toEqual(['r', 't'])
+    editExisting('t')
+    type('abc')
+    escape()
+
+    expect(ids().sort()).toEqual(['r', 't'])
+    expect(textOf('t')).toBe('')
+    expect(undoDepth()).toBe(1)
+  })
 })
 
 describe('useTextEdit：既有文字的行為不變', () => {
