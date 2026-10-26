@@ -96,6 +96,11 @@ class ViewportCullingService {
    * 整個遞迴使用同一個 expanded rect 進行元素比對與 group 剪枝。
    * 因此距離視窗不超過 margin 的 group 仍會被遞迴，可能保留少量視窗外子元素。
    * 這是以少量多渲染換取零 per-element 物件配置的取捨。
+   *
+   * 座標空間：子元素的 x / y 相對於父群組（local），根元素則是世界座標。
+   * 進入群組的子元素前，把 expanded 平移到該群組的 local 空間再比對，
+   * 與渲染時的 absoluteCoords 一致：只沿父鏈累加 x / y，不套用群組的 rotation。
+   * 平移只在每個有子元素的節點配置一次，元素層級仍不配置物件。
    */
   cull(
     rootIds:    string[],
@@ -112,6 +117,7 @@ class ViewportCullingService {
     return result
   }
 
+  /** expanded 與 ids 位於同一個座標空間：根層級為世界座標，群組內為該群組的 local 座標。 */
   private _cullBranch(
     ids:      string[],
     byId:     Readonly<Record<string, CanvasElement>>,
@@ -123,7 +129,9 @@ class ViewportCullingService {
       if (!el || !el.visible) continue
       if (!rectOverlaps(this.getRotatedBounds(el), expanded)) continue
       result.push(el)
-      if (el.childIds.length > 0) this._cullBranch(el.childIds, byId, expanded, result)
+      if (el.childIds.length > 0) {
+        this._cullBranch(el.childIds, byId, translateRect(expanded, -el.x, -el.y), result)
+      }
     }
   }
 
@@ -238,6 +246,11 @@ function rectOverlaps(a: Rect, b: Rect): boolean {
 /** 將 Rect 四邊各向外展開 margin 個單位，回傳新物件。 */
 function expandRect(r: Rect, margin: number): Rect {
   return { left: r.left - margin, top: r.top - margin, right: r.right + margin, bottom: r.bottom + margin }
+}
+
+/** 將 Rect 平移 (dx, dy)，回傳新物件；用於把 viewport 換算到群組的 local 座標。 */
+function translateRect(r: Rect, dx: number, dy: number): Rect {
+  return { left: r.left + dx, top: r.top + dy, right: r.right + dx, bottom: r.bottom + dy }
 }
 
 // ── Singleton export ───────────────────────────────────────────────────────────

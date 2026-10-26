@@ -1797,3 +1797,94 @@ describe('CanvasArea：新建文字的 History（#8）', () => {
     expect(undoDepth(store)).toBe(0)
   })
 })
+
+// ── Viewport culling（Batch C）────────────────────────────────────────────────
+
+describe('CanvasArea：群組子元素在平移、縮放後仍會畫出（Batch C）', () => {
+  /** 畫布上有沒有這個元素的 shape（被視窗裁掉的元素不會建立 shape）。 */
+  const drawn = (id: string) => stage.findOne((node: Konva.Node) => node.id() === id) !== undefined
+
+  function wheel(x: number, y: number, init: WheelEventInit) {
+    content().dispatchEvent(
+      new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: x, clientY: y, ...init }),
+    )
+  }
+
+  /** 兩個矩形組成的群組：世界 (300, 200)，大小 247 × 111。 */
+  async function mountGroup() {
+    const store = await mountCanvas([
+      rect('blue', { x: 300, y: 200, width: 130, height: 60 }),
+      rect('red', { x: 437, y: 205, width: 110, height: 106 }),
+    ])
+    const groupId = store.group(['blue', 'red'])
+    await nextTick()
+    return { store, groupId }
+  }
+
+  /** 逐格滾動，記下子元素沒畫出來的格數（空陣列表示每一格都有畫出）。 */
+  async function stepsWithMissingChildren(
+    steps: number,
+    x: number,
+    y: number,
+    init: WheelEventInit,
+  ) {
+    const missing: number[] = []
+    for (let step = 1; step <= steps; step++) {
+      wheel(x, y, init)
+      await nextTick()
+      if (!drawn('blue') || !drawn('red')) missing.push(step)
+    }
+    return missing
+  }
+
+  it('Ctrl+滾輪在群組上放大再縮小：每一格子元素都有畫出', async () => {
+    const { groupId } = await mountGroup()
+    const viewport = useViewportStore()
+
+    const zoomIn = await stepsWithMissingChildren(12, 420, 255, { deltaY: -100, ctrlKey: true })
+    expect(viewport.viewport.scale).toBeGreaterThan(3)
+    expect(zoomIn).toEqual([])
+    expect(drawn(groupId)).toBe(true)
+
+    const zoomOut = await stepsWithMissingChildren(12, 420, 255, { deltaY: 100, ctrlKey: true })
+    expect(viewport.viewport.scale).toBeCloseTo(1)
+    expect(zoomOut).toEqual([])
+  })
+
+  it('一般滾輪往右平移（群組仍在視窗內）：每一格子元素都有畫出', async () => {
+    const { groupId } = await mountGroup()
+
+    // 往右捲 10 × 25 = 250px：視窗世界範圍變成 x ∈ [250, 1050]，群組仍在畫面內。
+    const missing = await stepsWithMissingChildren(10, 400, 300, { deltaX: 25 })
+
+    expect(useViewportStore().viewport).toMatchObject({ x: -250, y: 0, scale: 1 })
+    expect(missing).toEqual([])
+    expect(drawn(groupId)).toBe(true)
+  })
+
+  it('拖曳群組到右側、平移過去後 Undo / Redo：群組與子元素一起畫出', async () => {
+    const { store, groupId } = await mountGroup()
+
+    press(360, 230)
+    move(760, 230)
+    releaseOnStage(760, 230)
+    expect(box(store, groupId)).toMatchObject({ x: 700, y: 200 })
+    expect(undoDepth(store)).toBe(2)
+
+    // 往右捲 400px：視窗世界範圍 x ∈ [400, 1200]，群組在 [700, 947]。
+    for (let step = 0; step < 4; step++) wheel(400, 300, { deltaX: 100 })
+    await nextTick()
+    expect([drawn(groupId), drawn('blue'), drawn('red')]).toEqual([true, true, true])
+
+    // 回到 [300, 547]：與視窗 [400, 1200] 仍有重疊。
+    pressUndo()
+    await nextTick()
+    expect(box(store, groupId)).toMatchObject({ x: 300, y: 200 })
+    expect([drawn(groupId), drawn('blue'), drawn('red')]).toEqual([true, true, true])
+
+    pressRedo()
+    await nextTick()
+    expect(box(store, groupId)).toMatchObject({ x: 700, y: 200 })
+    expect([drawn(groupId), drawn('blue'), drawn('red')]).toEqual([true, true, true])
+  })
+})
