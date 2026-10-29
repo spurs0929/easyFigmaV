@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useElementStore } from '@/store/element'
-import { ELEMENT_HISTORY_MAX, ElementKind, type CanvasElement } from '@/types/element'
+import {
+  ELEMENT_HISTORY_MAX,
+  ElementKind,
+  effectiveRotation,
+  type CanvasElement,
+} from '@/types/element'
 
 type Store = ReturnType<typeof useElementStore>
 
@@ -1487,5 +1492,87 @@ describe('elementStore history', () => {
       store.pushSnapshot()
       expect(drainUndo(store)).toEqual({ effective: 1, empty: 0 })
     })
+  })
+})
+
+// ── 群組的 rotation 不生效（Batch G）────────────────────────────────────────────
+
+describe('群組的 rotation 不生效（Batch G）', () => {
+  let store: Store
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    store = useElementStore()
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      throw new Error(`unexpected console.error: ${args.join(' ')}`)
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** 模擬既有文件：重新載入一份指定群組 rotation 不為 0 的文件（不經過 History）。 */
+  function reloadWithGroupRotation(groupId: string, rotation: number) {
+    store.loadSnapshot({
+      byId: { ...store.byId, [groupId]: { ...store.byId[groupId], rotation } },
+      rootIds: rootOrder(store),
+    })
+  }
+
+  it('effectiveRotation：群組回傳 0，其他元素回傳原本的 rotation', () => {
+    expect(effectiveRotation(rect('g', { kind: ElementKind.Group, rotation: 45 }))).toBe(0)
+    expect(effectiveRotation(rect('r', { rotation: 30 }))).toBe(30)
+    expect(effectiveRotation(rect('t', { kind: ElementKind.Text, rotation: -15 }))).toBe(-15)
+  })
+
+  it('已旋轉 90° 的群組再與其他元素 Group：新群組邊界以未旋轉的框計算', () => {
+    store.addAll([
+      rect('l', { x: 0, y: 300, width: 100, height: 100 }),
+      rect('r', { x: 500, y: 300, width: 100, height: 100 }),
+      rect('c', { x: 700, y: 300, width: 100, height: 100 }),
+    ])
+    const inner = store.group(['l', 'r'])
+    reloadWithGroupRotation(inner, 90)
+
+    const outer = store.group([inner, 'c'])
+
+    expect(store.get(outer)).toMatchObject({ x: 0, y: 300, width: 800, height: 100 })
+    expect(store.get(inner)).toMatchObject({ x: 0, y: 0, width: 600, height: 100, rotation: 90 })
+  })
+
+  it('已旋轉的群組再 Group 後解散：內層群組的位置與儲存的 rotation 不變', () => {
+    store.addAll([
+      rect('l', { x: 0, y: 300, width: 100, height: 100 }),
+      rect('r', { x: 500, y: 300, width: 100, height: 100 }),
+      rect('c', { x: 700, y: 300, width: 100, height: 100 }),
+    ])
+    const inner = store.group(['l', 'r'])
+    reloadWithGroupRotation(inner, 90)
+    const outer = store.group([inner, 'c'])
+
+    store.ungroup(outer)
+
+    expect(store.get(inner)).toMatchObject({ x: 0, y: 300, width: 600, height: 100, rotation: 90 })
+  })
+
+  it('一般旋轉矩形 Group：邊界與子元素 local 座標維持原本的數值', () => {
+    store.addAll([
+      rect('p', { x: 100, y: 100, width: 200, height: 50, rotation: 30 }),
+      rect('q', { x: 400, y: 100, width: 50, height: 50 }),
+    ])
+
+    const groupId = store.group(['p', 'q'])
+    const group = store.get(groupId)!
+    const p = store.get('p')!
+
+    expect(group.x).toBeCloseTo(100.89745962155612, 10)
+    expect(group.y).toBeCloseTo(53.34936490538903, 10)
+    expect(group.width).toBeCloseTo(349.1025403784439, 10)
+    expect(group.height).toBeCloseTo(143.30127018922195, 10)
+    expect(group.rotation).toBe(0)
+    expect(p.x).toBeCloseTo(-0.8974596215561, 10)
+    expect(p.y).toBeCloseTo(46.65063509461097, 10)
+    expect(p.rotation).toBe(30)
   })
 })

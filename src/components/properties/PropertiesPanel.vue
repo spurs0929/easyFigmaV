@@ -13,6 +13,7 @@ import {
   ELEMENT_DEFAULT_LETTER_SPACING,
   ELEMENT_DEFAULT_LINE_HEIGHT,
   ELEMENT_DEFAULT_TEXT_ALIGN,
+  effectiveRotation,
 } from '@/types/element'
 
 const elementStore = useElementStore()
@@ -46,11 +47,15 @@ const TEXT_ALIGN_OPTIONS: Array<{ label: string; value: TextAlign }> = [
 ]
 const DEFAULT_COLOR_HEX = '#000000'
 const EMPTY_SELECTION_MESSAGE = '選取一個物件後即可編輯屬性'
+const GROUP_TRANSFORM_HINT = '群組目前不支援旋轉與縮放'
 
 const el = computed<CanvasElement | null>(() => {
   const selected = elementStore.selectedElements
   return selected.length === 1 ? selected[0] : null
 })
+
+/** 群組目前不支援旋轉與縮放：Rotation / W / H 顯示但停用，X / Y 照常可編輯。 */
+const transformLocked = computed(() => el.value?.kind === ElementKind.Group)
 
 const _colorAtOpen = ref<Record<'fill' | 'stroke', string>>({ fill: '', stroke: '' })
 
@@ -165,9 +170,18 @@ function setTextAlign(align: TextAlign): void {
           </label>
         </div>
         <div class="props-grid-2 props-grid-2--spaced">
-          <label class="props-field">
+          <label
+            class="props-field"
+            :class="{ 'props-field--disabled': transformLocked }"
+            :title="transformLocked ? GROUP_TRANSFORM_HINT : undefined"
+          >
             <span class="props-label">Rotation</span>
-            <input type="number" :value="round(el.rotation)" @change="onNumericFieldChange('rotation', $event)">
+            <input
+              type="number"
+              :value="round(effectiveRotation(el))"
+              :disabled="transformLocked"
+              @change="onNumericFieldChange('rotation', $event)"
+            />
           </label>
           <label class="props-field">
             <span class="props-label">Opacity</span>
@@ -180,13 +194,33 @@ function setTextAlign(align: TextAlign): void {
       <section class="props-section">
         <div class="props-section-title">Layout</div>
         <div class="props-grid-2">
-          <label class="props-field">
+          <label
+            class="props-field"
+            :class="{ 'props-field--disabled': transformLocked }"
+            :title="transformLocked ? GROUP_TRANSFORM_HINT : undefined"
+          >
             <span class="props-label">W</span>
-            <input type="number" min="1" :value="round(el.width)" @change="onNumericFieldChange('width', $event)">
+            <input
+              type="number"
+              min="1"
+              :value="round(el.width)"
+              :disabled="transformLocked"
+              @change="onNumericFieldChange('width', $event)"
+            />
           </label>
-          <label class="props-field">
+          <label
+            class="props-field"
+            :class="{ 'props-field--disabled': transformLocked }"
+            :title="transformLocked ? GROUP_TRANSFORM_HINT : undefined"
+          >
             <span class="props-label">H</span>
-            <input type="number" min="1" :value="round(el.height)" @change="onNumericFieldChange('height', $event)">
+            <input
+              type="number"
+              min="1"
+              :value="round(el.height)"
+              :disabled="transformLocked"
+              @change="onNumericFieldChange('height', $event)"
+            />
           </label>
         </div>
       </section>

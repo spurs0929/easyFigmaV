@@ -239,6 +239,14 @@ function supportsSelectionOverlay(el: CanvasElement): boolean {
   return el.kind !== ElementKind.Vector
 }
 
+/**
+ * 群組目前不支援縮放：縮放只會改群組自己的 x / y / w / h，子元素不會跟著縮放，
+ * 拖左、上把手時還會讓子元素整批平移。群組保留選取外框，但不提供縮放把手。
+ */
+function supportsResize(el: CanvasElement): boolean {
+  return el.kind !== ElementKind.Group
+}
+
 function warnInvalidSelectionHandle(handle: string): void {
   if (import.meta.env.DEV) {
     console.warn(`[selection] unsupported handle: ${handle}`)
@@ -481,6 +489,8 @@ function renderSelectionOverlay(): void {
     }),
   )
 
+  if (!supportsResize(selectedElement)) return
+
   const handles: Array<{ point: Point; corner: SelectionCornerHandle }> = [
     { point: { x: left, y: top }, corner: 'tl' },
     { point: { x: right, y: top }, corner: 'tr' },
@@ -509,7 +519,8 @@ function renderSelectionOverlay(): void {
 
 function startResizeGesture(id: string, handle: SelectionCornerHandle): void {
   const el = elementStore.get(id)
-  if (!el) return
+  // 防禦：畫面上不會出現群組的把手，但不論從哪個入口進來都不開始縮放群組。
+  if (!el || !supportsResize(el)) return
   _isDragging = true
   _gesture = {
     kind: 'resizing',

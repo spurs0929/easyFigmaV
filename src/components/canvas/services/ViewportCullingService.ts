@@ -1,4 +1,4 @@
-import type { CanvasElement } from '@/types/element'
+import { effectiveRotation, type CanvasElement } from '@/types/element'
 import type { Viewport } from '@/store/viewport'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -53,9 +53,11 @@ class ViewportCullingService {
    * Fast-path（rotation 非有限值 或 ≈ 0）：
    * - NaN rotation 統一走 fast-path，避免傳播 NaN 導致元素永遠可見。
    * - 負寬高在 fast-path 以 min/max 正規化；旋轉路徑已透過 corners min/max 自然處理。
+   *
+   * 使用生效的 rotation（見 effectiveRotation）：群組一律視為 0，與畫面上的群組框一致。
    */
   getRotatedBounds(el: CanvasElement): Rect {
-    const rot = el.rotation
+    const rot = effectiveRotation(el)
     if (!isFinite(rot) || Math.abs(rot % 360) < 0.001) {
       return {
         left:   Math.min(el.x, el.x + el.width),

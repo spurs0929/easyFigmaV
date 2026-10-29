@@ -110,6 +110,16 @@ $font-size-xs: 10px;
   }
 }
 
+// 顯示但停用的欄位（例如群組的 Rotation / W / H）：保留數值，看得出不能編輯。
+.props-field--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+
+  input {
+    cursor: not-allowed;
+  }
+}
+
 .props-select,
 .props-hex {
   width: 100%;

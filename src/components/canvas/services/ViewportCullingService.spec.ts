@@ -228,3 +228,33 @@ describe('ViewportCullingService.cull：既有行為不變', () => {
     ])
   })
 })
+
+describe('ViewportCullingService.getRotatedBounds：群組的 rotation 不生效（Batch G）', () => {
+  it('群組忽略 rotation，回傳未旋轉的框', () => {
+    expect(
+      cullingService.getRotatedBounds(
+        group('g', [], { x: 0, y: 300, width: 600, height: 100, rotation: 90 }),
+      ),
+    ).toEqual({ left: 0, top: 300, right: 600, bottom: 400 })
+  })
+
+  it('一般矩形 rotation 30：以中心為軸的外接矩形維持原本的數值', () => {
+    const bounds = cullingService.getRotatedBounds(rect('r', { rotation: 30 }))
+
+    expect(bounds.left).toBeCloseTo(-18.3012701892219, 10)
+    expect(bounds.top).toBeCloseTo(-18.3012701892219, 10)
+    expect(bounds.right).toBeCloseTo(118.3012701892219, 10)
+    expect(bounds.bottom).toBeCloseTo(118.3012701892219, 10)
+  })
+
+  it('已旋轉 90° 的長條群組：視窗只看到右半邊時，群組與畫面內的子元素保留', () => {
+    // 視窗世界範圍 x ∈ [480, 1280]（加 margin 後 [416, 1344]）：r 在 [500, 600]，l 在 [0, 100]。
+    const byId = byIdOf(
+      group('g', ['l', 'r'], { x: 0, y: 300, width: 600, height: 100, rotation: 90 }),
+      rect('l', { parentId: 'g', x: 0, y: 0 }),
+      rect('r', { parentId: 'g', x: 500, y: 0 }),
+    )
+
+    expect(cullIds(['g'], byId, { x: -480, y: 0, scale: 1 })).toEqual(['g', 'r'])
+  })
+})

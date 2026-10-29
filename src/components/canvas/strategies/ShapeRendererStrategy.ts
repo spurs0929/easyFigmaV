@@ -11,6 +11,7 @@ import {
   ELEMENT_DEFAULT_LETTER_SPACING,
   ELEMENT_DEFAULT_TEXT_ALIGN,
   POLYGON_DEFAULT_SIDES,
+  effectiveRotation,
 } from '@/types/element'
 import { ToolType } from '@/types/tool'
 import { COLOR_GHOST_FILL, COLOR_SELECTION } from '@/constants/canvas'
@@ -491,7 +492,8 @@ class GroupRenderer implements ShapeRenderer {
       width: el.width,
       height: el.height,
       opacity: el.opacity,
-      rotation: el.rotation,
+      // 群組不支援旋轉：子元素不跟著轉，群組框也不轉（見 effectiveRotation）。
+      rotation: effectiveRotation(el),
       fill: '',
       stroke: attrs.selected ? COLOR_SELECTION : 'rgba(148,163,184,0.4)',
       strokeWidth: attrs.strokeWidth,

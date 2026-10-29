@@ -175,7 +175,18 @@ export function clampStrokeWidth(v: number): number {
 }
 
 /**
- * 取得元素在父座標空間中的四個角落，已套用 rotation。
+ * 元素在畫面與幾何計算中實際生效的 rotation（degrees）。
+ *
+ * 群組目前不支援旋轉：子元素不會跟著群組旋轉，所以群組的 rotation 一律視為 0，
+ * 讓群組框的畫面、點擊、框選、視窗裁切與建立群組時的邊界都使用同一個未旋轉的框。
+ * 儲存的 rotation 不修改（既有文件裡可能不為 0），存檔、複製與解散都照舊保留原值。
+ */
+export function effectiveRotation(el: CanvasElement): number {
+  return el.kind === ElementKind.Group ? 0 : el.rotation
+}
+
+/**
+ * 取得元素在父座標空間中的四個角落，已套用生效的 rotation（見 effectiveRotation）。
  * 供 computeGroupBounds 及 group() action 共用，避免重複實作幾何邏輯。
  *
  * 注意：scaleX / scaleY 為 ±1（翻轉），不影響 AABB 大小，故不需額外處理。
@@ -183,7 +194,7 @@ export function clampStrokeWidth(v: number): number {
 export function rotatedCorners(el: CanvasElement): [number, number][] {
   const cx = el.x + el.width / 2
   const cy = el.y + el.height / 2
-  const rad = (el.rotation * Math.PI) / 180
+  const rad = (effectiveRotation(el) * Math.PI) / 180
   const cos = Math.cos(rad)
   const sin = Math.sin(rad)
 

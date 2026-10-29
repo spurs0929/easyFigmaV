@@ -9,6 +9,7 @@ import { useToolStore } from '@/store/tool'
 import { useViewportStore } from '@/store/viewport'
 import { ELEMENT_HISTORY_MAX, ElementKind, type CanvasElement } from '@/types/element'
 import { ToolType } from '@/types/tool'
+import { COLOR_SELECTION } from '@/constants/canvas'
 import CanvasArea from './CanvasArea.vue'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1886,5 +1887,236 @@ describe('CanvasArea：群組子元素在平移、縮放後仍會畫出（Batch 
     await nextTick()
     expect(box(store, groupId)).toMatchObject({ x: 700, y: 200 })
     expect([drawn(groupId), drawn('blue'), drawn('red')]).toEqual([true, true, true])
+  })
+})
+
+// ── 群組變形限制（Batch G）──────────────────────────────────────────────────────
+
+describe('CanvasArea：群組變形限制（Batch G）', () => {
+  const shapeOf = (id: string) =>
+    stage.findOne((node: Konva.Node) => node.id() === id) as Konva.Shape | undefined
+  const drawn = (id: string) => shapeOf(id) !== undefined
+  const resizeHandles = () =>
+    stage.find((node: Konva.Node) => node.getAttr('selectionHandleType') === 'resize')
+  /** 選取外框：不接收事件、以選取色描邊的 Rect（被選取的元素本身會接收事件）。 */
+  const selectionFrames = () =>
+    stage.find(
+      (node: Konva.Node) =>
+        node instanceof Konva.Rect && !node.isListening() && node.stroke() === COLOR_SELECTION,
+    ) as Konva.Rect[]
+
+  /** 群組：世界 (100, 100)，大小 200 × 200；a 在 (100, 100)、b 在 (250, 250)。 */
+  async function mountGroup() {
+    const store = await mountCanvas([
+      rect('a', { x: 100, y: 100, width: 100, height: 100 }),
+      rect('b', { x: 250, y: 250, width: 50, height: 50 }),
+    ])
+    const groupId = store.group(['a', 'b'])
+    await nextTick()
+    return { store, groupId }
+  }
+
+  /** 模擬既有文件：重新載入一份群組 rotation 不為 0 的文件（不經過 History）。 */
+  async function reloadWithGroupRotation(store: Store, groupId: string, rotation: number) {
+    store.loadSnapshot({
+      byId: { ...store.byId, [groupId]: { ...store.byId[groupId], rotation } },
+      rootIds: store.rootElements.map((el) => el.id),
+    })
+    await nextTick()
+  }
+
+  /** 子元素沿父鏈累加後的世界座標。 */
+  function worldPosition(store: Store, id: string) {
+    let el = store.get(id)!
+    let x = el.x
+    let y = el.y
+    while (el.parentId) {
+      el = store.get(el.parentId)!
+      x += el.x
+      y += el.y
+    }
+    return { x, y }
+  }
+
+  // ── 縮放把手 ──
+
+  it('選取群組：有選取外框，沒有縮放把手', async () => {
+    const { store, groupId } = await mountGroup()
+    await selectAndRender(store, groupId)
+
+    expect(resizeHandles()).toHaveLength(0)
+    expect(
+      selectionFrames().map((frame) => [frame.x(), frame.y(), frame.width(), frame.height()]),
+    ).toEqual([[100, 100, 200, 200]])
+  })
+
+  it('選取一般矩形：仍有四個縮放把手', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    expect(resizeHandles().map((handle) => handle.getAttr('selectionHandleCorner'))).toEqual([
+      'tl',
+      'tr',
+      'br',
+      'bl',
+    ])
+    expect(selectionFrames()).toHaveLength(1)
+  })
+
+  it('在群組原本右下把手的位置拖曳：整個群組移動，寬高不變，只記一筆 History', async () => {
+    const { store, groupId } = await mountGroup()
+    await selectAndRender(store, groupId)
+
+    press(300, 300)
+    move(340, 340)
+    releaseOnStage(340, 340)
+
+    expect(box(store, groupId)).toEqual({ x: 140, y: 140, width: 200, height: 200 })
+    expect(worldPosition(store, 'b')).toEqual({ x: 290, y: 290 })
+    expect(undoDepth(store)).toBe(2)
+  })
+
+  it('在群組原本左上把手的位置拖曳：整個群組移動，子元素跟著移動同樣距離', async () => {
+    const { store, groupId } = await mountGroup()
+    await selectAndRender(store, groupId)
+
+    press(100, 100)
+    move(60, 50)
+    releaseOnStage(60, 50)
+
+    expect(box(store, groupId)).toEqual({ x: 60, y: 50, width: 200, height: 200 })
+    expect([worldPosition(store, 'a'), worldPosition(store, 'b')]).toEqual([
+      { x: 60, y: 50 },
+      { x: 210, y: 200 },
+    ])
+    expect(undoDepth(store)).toBe(2)
+  })
+
+  it('縮放手勢不接受群組：就算畫布上出現指向群組的把手，按下拖曳也不改變群組', async () => {
+    const { store, groupId } = await mountGroup()
+    await selectAndRender(store, groupId)
+    // 模擬其他入口：在最上層放一個指向群組的縮放把手。
+    stage
+      .getLayers()
+      .at(-1)!
+      .add(
+        new Konva.Rect({
+          x: 290,
+          y: 290,
+          width: 20,
+          height: 20,
+          listening: true,
+          selectionHandleType: 'resize',
+          selectionHandleCorner: 'br',
+          selectionElementId: groupId,
+        }),
+      )
+
+    press(300, 300)
+    move(340, 340)
+    releaseOnStage(340, 340)
+
+    expect(box(store, groupId)).toEqual({ x: 100, y: 100, width: 200, height: 200 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('一般矩形：拖左上把手仍照常縮放', async () => {
+    const store = await mountCanvas([rect('a')])
+    await selectAndRender(store, 'a')
+
+    press(100, 100)
+    move(80, 70)
+    releaseOnStage(80, 70)
+
+    expect(box(store, 'a')).toEqual({ x: 80, y: 70, width: 120, height: 130 })
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('群組拖曳與 Undo / Redo 不變', async () => {
+    const { store, groupId } = await mountGroup()
+
+    press(150, 150)
+    move(170, 180)
+    releaseOnStage(170, 180)
+    expect(box(store, groupId)).toEqual({ x: 120, y: 130, width: 200, height: 200 })
+
+    pressUndo()
+    expect(box(store, groupId)).toEqual({ x: 100, y: 100, width: 200, height: 200 })
+    pressRedo()
+    expect(box(store, groupId)).toEqual({ x: 120, y: 130, width: 200, height: 200 })
+    expect(worldPosition(store, 'a')).toEqual({ x: 120, y: 130 })
+  })
+
+  // ── 既有文件裡已旋轉的群組：rotation 視為 0 ──
+
+  it('已旋轉的群組：畫面不旋轉，儲存的 rotation 與 documentRevision 不變', async () => {
+    const { store, groupId } = await mountGroup()
+    await reloadWithGroupRotation(store, groupId, 45)
+    const revision = store.documentRevision
+    await selectAndRender(store, groupId)
+    await nextTick()
+
+    expect(shapeOf(groupId)!.rotation()).toBe(0)
+    expect(selectionFrames().map((frame) => frame.rotation())).toEqual([0])
+    expect(resizeHandles()).toHaveLength(0)
+    expect(store.get(groupId)!.rotation).toBe(45)
+    expect(store.documentRevision).toBe(revision)
+  })
+
+  it('已旋轉的群組：點擊未旋轉框內、子元素之間的空白處會選到群組', async () => {
+    const { store, groupId } = await mountGroup()
+    await reloadWithGroupRotation(store, groupId, 45)
+
+    press(270, 120)
+    releaseOnStage(270, 120)
+
+    expect([...store.selectedIds]).toEqual([groupId])
+  })
+
+  it('已旋轉的群組：框選只碰到未旋轉框的外側時不會選到', async () => {
+    const { store, groupId } = await mountGroup()
+    await reloadWithGroupRotation(store, groupId, 45)
+
+    press(330, 170)
+    move(310, 150)
+    releaseOnStage(310, 150)
+
+    expect(store.selectedIds.has(groupId)).toBe(false)
+  })
+
+  it('已旋轉 90° 的長條群組：視窗只看到右半邊時，群組與畫面內的子元素都會畫出', async () => {
+    const store = await mountCanvas([
+      rect('l', { x: 0, y: 300, width: 100, height: 100 }),
+      rect('r', { x: 500, y: 300, width: 100, height: 100 }),
+    ])
+    const groupId = store.group(['l', 'r'])
+    await reloadWithGroupRotation(store, groupId, 90)
+    // 視窗世界範圍 x ∈ [480, 1280]：r 在 [500, 600]，l 在 [0, 100]。
+    useViewportStore().setPan(-480, 0)
+    await nextTick()
+
+    expect([drawn(groupId), drawn('l'), drawn('r')]).toEqual([true, false, true])
+  })
+
+  it('已旋轉 90° 的長條群組再與其他元素 Group：視窗只看到左側時，畫面內的子元素會畫出', async () => {
+    const store = await mountCanvas([
+      rect('l', { x: 0, y: 300, width: 100, height: 100 }),
+      rect('r', { x: 500, y: 300, width: 100, height: 100 }),
+      rect('c', { x: 700, y: 300, width: 100, height: 100 }),
+    ])
+    const inner = store.group(['l', 'r'])
+    await reloadWithGroupRotation(store, inner, 90)
+    const outer = store.group([inner, 'c'])
+    // 視窗世界範圍 x ∈ [-620, 180]：只有 l（[0, 100]）在畫面內。
+    useViewportStore().setPan(620, 0)
+    await nextTick()
+
+    expect([drawn(outer), drawn(inner), drawn('l'), drawn('r'), drawn('c')]).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+    ])
   })
 })
