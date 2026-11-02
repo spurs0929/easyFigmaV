@@ -7,9 +7,29 @@ export type PenDraftPoint = VectorPoint
 
 export type SelectionCornerHandle = 'tl' | 'tr' | 'br' | 'bl'
 
+export interface PenGestureState {
+  kind: 'pen'
+  points: PenDraftPoint[]
+  path: Konva.Shape
+  controls: Konva.Group
+  pointerDown: boolean
+  activeIndex: number
+  dragOrigin: Point
+  hoverPoint: Point | null
+  closing: boolean
+}
+
 export type GestureState =
   | { kind: 'idle' }
-  | { kind: 'panning'; stageX: number; stageY: number; px: number; py: number }
+  | {
+      kind: 'panning'
+      stageX: number
+      stageY: number
+      px: number
+      py: number
+      /** 平移前進行中的 Pen 草稿。平移結束時還原，草稿不會因為平移而遺失。 */
+      resume?: PenGestureState
+    }
   | {
       kind: 'dragging'
       startWorld: Point
@@ -33,17 +53,7 @@ export type GestureState =
       current: Point
       ghost: Konva.Shape
     }
-  | {
-      kind: 'pen'
-      points: PenDraftPoint[]
-      path: Konva.Shape
-      controls: Konva.Group
-      pointerDown: boolean
-      activeIndex: number
-      dragOrigin: Point
-      hoverPoint: Point | null
-      closing: boolean
-    }
+  | PenGestureState
   | {
       kind: 'pencil'
       points: PenDraftPoint[]

@@ -232,7 +232,12 @@ function defaultElementName(kind: ElementKind): string {
 }
 
 function isVectorDraftGesture(gesture: GestureState): boolean {
-  return gesture.kind === 'pen' || gesture.kind === 'pencil'
+  // 平移時暫存的 Pen 草稿也還在建立中，選取外框與 Vector 控制點同樣不顯示。
+  return (
+    gesture.kind === 'pen' ||
+    gesture.kind === 'pencil' ||
+    (gesture.kind === 'panning' && gesture.resume !== undefined)
+  )
 }
 
 function supportsSelectionOverlay(el: CanvasElement): boolean {
@@ -582,9 +587,14 @@ function finishPenGesture(closePath: boolean): void {
   const g = _gesture
   if (g.kind !== 'pen') return
 
+  _gesture = { kind: 'idle' }
+  commitPenDraft(g, closePath)
+}
+
+/** 把 Pen 草稿建立成 Vector 並移除預覽。不動 _gesture，平移中暫存的草稿也用它收尾。 */
+function commitPenDraft(g: Extract<GestureState, { kind: 'pen' }>, closePath: boolean): void {
   const points = g.points.map(cloneDraftPoint)
   destroyPenGesture(g)
-  _gesture = { kind: 'idle' }
 
   // 至少要兩個錨點才有意義；不足時視為取消，不建立空 Vector。
   if (points.length < 2) return
@@ -1116,7 +1126,10 @@ function onMouseDown(e: Konva.KonvaEventObject<MouseEvent>): void {
 function startPanning(): void {
   const ptr = stage.getPointerPosition()!
   const vp = viewportStore.viewport
-  _gesture = { kind: 'panning', stageX: vp.x, stageY: vp.y, px: ptr.x, py: ptr.y }
+  // Pen 草稿是多步驟手勢，按下時可能還在進行。先暫存，平移結束再還原，不能直接蓋掉：
+  // 蓋掉的話草稿遺失，預覽也會留在 uiLayer 上沒人收。
+  const resume = _gesture.kind === 'pen' ? _gesture : undefined
+  _gesture = { kind: 'panning', stageX: vp.x, stageY: vp.y, px: ptr.x, py: ptr.y, resume }
   stage.container().style.cursor = 'grabbing'
 }
 
@@ -1302,7 +1315,12 @@ function onMouseUp(releasedOnStage: boolean): void {
   stage.container().style.cursor = toolStore.cursor
 
   if (g.kind === 'panning') {
-    _gesture = { kind: 'idle' }
+    const pen = g.resume
+    _gesture = pen ?? { kind: 'idle' }
+    if (pen) {
+      if (releasedOnStage) pen.hoverPoint = pointerWorld()
+      refreshPenGesture(pen)
+    }
     return
   }
 
@@ -1453,12 +1471,21 @@ onMounted(() => {
     },
   )
 
+  // 使用者切走工具時自動收尾，避免畫面留下一個無法操作的 Pen 草稿。
+  // 看基礎工具而不是 activeTool：按住 Space 暫時切到 Hand 只是要平移，不代表換工具。
+  // 規則是「基礎工具不是 Pen 就不留 Pen 草稿」，所以只看新的工具：同一個 tick 內
+  // Move → Pen（開始草稿）→ Rect 時，watcher 看到的是 Move → Rect，草稿一樣要收。
   watch(
-    () => toolStore.activeTool,
-    (tool, prevTool) => {
-      if (prevTool === ToolType.Pen && tool !== ToolType.Pen && _gesture.kind === 'pen') {
-        // 使用者切走工具時自動收尾，避免畫面留下一個無法操作的 Pen 草稿。
+    () => toolStore.baseTool,
+    (tool) => {
+      if (tool === ToolType.Pen) return
+      if (_gesture.kind === 'pen') {
         finishPenGesture(false)
+      } else if (_gesture.kind === 'panning' && _gesture.resume) {
+        // 平移中換了工具：草稿照樣收尾，平移結束時就沒有東西可以還原。
+        const pen = _gesture.resume
+        _gesture.resume = undefined
+        commitPenDraft(pen, false)
       }
     },
   )
@@ -1466,9 +1493,6 @@ onMounted(() => {
   watch(
     () => toolStore.activeTool,
     (tool, prevTool) => {
-      if (prevTool === ToolType.Pen && tool !== ToolType.Pen && _gesture.kind === 'pen') {
-        finishPenGesture(false)
-      }
       if (prevTool === ToolType.Pencil && tool !== ToolType.Pencil && _gesture.kind === 'pencil') {
         finishPencilGesture()
       }

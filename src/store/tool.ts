@@ -54,6 +54,12 @@ export const useToolStore = defineStore('tool', () => {
   const activeTool = computed<ToolType>(() => _toolStack.value.at(-1) ?? ToolType.Move)
 
   /**
+   * 基礎工具（堆疊底層）：使用者主動選擇的工具，不含按住 Space 的暫時 Hand。
+   * 要判斷「使用者是否真的換了工具」時看它，而不是看 activeTool。
+   */
+  const baseTool = computed<ToolType>(() => _toolStack.value[0] ?? ToolType.Move)
+
+  /**
    * 當前啟用工具的完整定義（O(1)）。
    * _toolStack 只存合法 ToolType，TOOL_BY_TYPE 涵蓋所有類型，
    * ! 斷言安全；setTool 入口有 runtime 防禦確保不會存入非法值。
@@ -157,6 +163,7 @@ export const useToolStore = defineStore('tool', () => {
 
   return {
     activeTool,
+    baseTool,
     activeToolDef,
     cursor,
     activeSubTools,

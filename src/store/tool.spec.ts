@@ -237,6 +237,39 @@ describe('tool store', () => {
     })
   })
 
+  describe('baseTool（Batch 3）', () => {
+    it('沒有暫時工具時與 activeTool 相同', () => {
+      const store = useToolStore()
+      store.setTool(ToolType.Pen)
+
+      expect(store.baseTool).toBe(ToolType.Pen)
+      expect(store.activeTool).toBe(ToolType.Pen)
+    })
+
+    it('按住 Space 時 activeTool 是 Hand，baseTool 仍是使用者選的工具', () => {
+      const store = useToolStore()
+      store.setTool(ToolType.Pen)
+
+      store.handleKeydown(keydown(SPACE))
+      expect(store.activeTool).toBe(ToolType.Hand)
+      expect(store.baseTool).toBe(ToolType.Pen)
+
+      store.handleKeyup(keyEvent('keyup', SPACE))
+      expect(store.baseTool).toBe(ToolType.Pen)
+    })
+
+    it('按住 Space 時切換工具會改 baseTool', () => {
+      const store = useToolStore()
+      store.setTool(ToolType.Pen)
+      store.handleKeydown(keydown(SPACE))
+
+      store.setTool(ToolType.Move)
+
+      expect(store.baseTool).toBe(ToolType.Move)
+      expect(store.activeTool).toBe(ToolType.Hand)
+    })
+  })
+
   describe('輸入框', () => {
     it.each(['input', 'textarea'])('焦點在 %s 時單鍵不切換工具', (tag) => {
       const store = useToolStore()

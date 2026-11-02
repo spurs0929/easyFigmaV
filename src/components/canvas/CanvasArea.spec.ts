@@ -2120,3 +2120,393 @@ describe('CanvasArea：群組變形限制（Batch G）', () => {
     ])
   })
 })
+
+describe('CanvasArea：Pen 草稿中平移（Batch 3）', () => {
+  // 工具列在 document 上把 Space 轉給 toolStore；這裡沒有掛工具列，直接呼叫同一個入口。
+  const spaceDown = () =>
+    useToolStore().handleKeydown(
+      new KeyboardEvent('keydown', { key: ' ', code: 'Space', cancelable: true }),
+    )
+  const spaceUp = () =>
+    useToolStore().handleKeyup(new KeyboardEvent('keyup', { key: ' ', code: 'Space' }))
+  const MIDDLE_DOWN = { button: 1, buttons: 4 }
+  const MIDDLE_UP = { button: 1, buttons: 0 }
+
+  /** Pen 預覽：掛在 uiLayer、帶 vectorPoints 的 Shape。 */
+  const previews = () =>
+    stage.find((n: Konva.Node) => Array.isArray(n.getAttr('vectorPoints'))) as Konva.Shape[]
+  const previewPoints = () =>
+    (previews()[0].getAttr('vectorPoints') as Array<{ x: number; y: number }>).map(({ x, y }) => ({
+      x,
+      y,
+    }))
+  /** Vector 的錨點換回世界座標。 */
+  const worldPoints = (el: CanvasElement) =>
+    (el.vectorPoints ?? []).map((p) => ({ x: p.x + el.x, y: p.y + el.y }))
+  const selectionFrames = () =>
+    stage.find(
+      (node: Konva.Node) =>
+        node instanceof Konva.Rect && !node.isListening() && node.stroke() === COLOR_SELECTION,
+    )
+
+  /** 用 Pen 點出 (100, 100)、(200, 100) 兩個錨點，草稿仍在進行中。 */
+  async function drawTwoAnchors() {
+    useToolStore().setTool(ToolType.Pen)
+    await nextTick()
+    press(100, 100)
+    releaseOnStage(100, 100)
+    press(200, 100)
+    releaseOnStage(200, 100)
+  }
+
+  /** 中鍵從 (400, 300) 拖到 (450, 300)：畫面往右平移 50。 */
+  function middlePan() {
+    press(400, 300, MIDDLE_DOWN)
+    move(450, 300, MIDDLE_DOWN)
+  }
+
+  it('中鍵平移後草稿保留：預覽只有一條，Enter 建立一個 Vector、一筆 Undo', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    middlePan()
+    releaseOnStage(450, 300, MIDDLE_UP)
+
+    expect(useViewportStore().viewport).toMatchObject({ x: 50, y: 0 })
+    expect(previews()).toHaveLength(1)
+    expect(previewPoints()).toEqual([
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+    ])
+    // 還原時預覽重畫：下一段的預覽線接到放開的位置（螢幕 450 → 世界 400）。
+    expect(previews()[0].getAttr('previewEnd')).toEqual({ x: 400, y: 300 })
+    expect(vectors(store)).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+
+    key('Enter')
+
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(1)
+    expect(worldPoints(vectors(store)[0])).toEqual([
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+    ])
+    expect(undoDepth(store)).toBe(1)
+    pressUndo()
+    expect(vectors(store)).toHaveLength(0)
+    pressRedo()
+    expect(vectors(store)).toHaveLength(1)
+  })
+
+  it('中鍵在畫布外放開：草稿一樣還原', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    middlePan()
+    leave(805, 300)
+    releaseOutside(1000, 300, MIDDLE_UP)
+    hover(400, 400)
+
+    expect(previews()).toHaveLength(1)
+    expect(previewPoints()).toHaveLength(2)
+
+    key('Enter')
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('按住 Space 拖曳平移：草稿保留，放開 Space 回到 Pen 繼續加錨點', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    spaceDown()
+    await nextTick()
+    expect(useToolStore().activeTool).toBe(ToolType.Hand)
+    expect(vectors(store)).toHaveLength(0)
+
+    press(400, 300)
+    move(450, 300)
+    releaseOnStage(450, 300)
+    spaceUp()
+    await nextTick()
+
+    expect(useToolStore().activeTool).toBe(ToolType.Pen)
+    expect(useViewportStore().viewport).toMatchObject({ x: 50, y: 0 })
+    expect(previews()).toHaveLength(1)
+
+    // 畫面右移 50：螢幕 (350, 200) 是世界 (300, 200)。
+    press(350, 200)
+    releaseOnStage(350, 200)
+    key('Enter')
+
+    expect(vectors(store)).toHaveLength(1)
+    expect(worldPoints(vectors(store)[0])).toEqual([
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+      { x: 300, y: 200 },
+    ])
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('Space 按下再放開、沒有拖曳：草稿保留，不建立 Vector、不產生 Undo', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    spaceDown()
+    await nextTick()
+    spaceUp()
+    await nextTick()
+
+    expect(previews()).toHaveLength(1)
+    expect(vectors(store)).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('只有一個錨點時按 Space：草稿不被取消', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pen)
+    await nextTick()
+    press(100, 100)
+    releaseOnStage(100, 100)
+
+    spaceDown()
+    await nextTick()
+    spaceUp()
+    await nextTick()
+
+    expect(previews()).toHaveLength(1)
+    press(200, 100)
+    releaseOnStage(200, 100)
+    key('Enter')
+    expect(vectors(store)).toHaveLength(1)
+  })
+
+  it('平移後按 Esc：草稿取消，預覽不殘留，不產生 Undo', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    middlePan()
+    releaseOnStage(450, 300, MIDDLE_UP)
+    key('Escape')
+
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+
+    // 下一次點擊開始的是新草稿，畫面上只有它自己的預覽。
+    press(300, 300)
+    releaseOnStage(300, 300)
+    expect(previews()).toHaveLength(1)
+  })
+
+  it('平移中 Enter / Esc 不作用（D1），放開後草稿仍在', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    middlePan()
+    key('Enter')
+    key('Escape')
+    expect(vectors(store)).toHaveLength(0)
+    releaseOnStage(450, 300, MIDDLE_UP)
+
+    expect(previews()).toHaveLength(1)
+    expect(vectors(store)).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+
+    // 放開後 Enter 恢復作用：還原的是原本的草稿，不是畫面上殘留的預覽。
+    key('Enter')
+    expect(vectors(store)).toHaveLength(1)
+    expect(previews()).toHaveLength(0)
+  })
+
+  it('Space 與中鍵交錯：平移中按下或放開 Space 都不會收掉草稿', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    // Space 先按下，中鍵平移中放開 Space。
+    spaceDown()
+    await nextTick()
+    middlePan()
+    spaceUp()
+    await nextTick()
+    releaseOnStage(450, 300, MIDDLE_UP)
+
+    expect(previews()).toHaveLength(1)
+    expect(vectors(store)).toHaveLength(0)
+
+    // 中鍵先按下，平移中按下 Space，放開中鍵後才放開 Space。
+    press(450, 300, MIDDLE_DOWN)
+    spaceDown()
+    await nextTick()
+    move(500, 300, MIDDLE_DOWN)
+    releaseOnStage(500, 300, MIDDLE_UP)
+    spaceUp()
+    await nextTick()
+
+    expect(useToolStore().activeTool).toBe(ToolType.Pen)
+    expect(useViewportStore().viewport).toMatchObject({ x: 100, y: 0 })
+    expect(previews()).toHaveLength(1)
+    expect(vectors(store)).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+
+    key('Enter')
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('平移中真正切換工具：草稿照樣完成，放開後不會還原出已失效的草稿', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    middlePan()
+    useToolStore().setTool(ToolType.Move)
+    await nextTick()
+
+    expect(vectors(store)).toHaveLength(1)
+    expect(previews()).toHaveLength(0)
+
+    releaseOnStage(450, 300, MIDDLE_UP)
+    expect(previews()).toHaveLength(0)
+
+    // 放開後是閒置狀態：Enter 不會再建立一次，Move 工具點空白處也不會加錨點。
+    key('Enter')
+    press(300, 300)
+    releaseOnStage(300, 300)
+
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('平移中切換工具、草稿只有一個錨點：取消，不建立 Vector、不產生 Undo', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pen)
+    await nextTick()
+    press(100, 100)
+    releaseOnStage(100, 100)
+
+    middlePan()
+    useToolStore().setTool(ToolType.Move)
+    await nextTick()
+    releaseOnStage(450, 300, MIDDLE_UP)
+
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(0)
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('平移中暫存草稿時不顯示選取外框', async () => {
+    const store = await mountCanvas([rect('a', { x: 500, y: 400, width: 50, height: 50 })])
+    await selectAndRender(store, 'a')
+    expect(selectionFrames()).toHaveLength(1)
+
+    // 開始 Pen 草稿本身不會觸發重繪（_gesture 不是響應式），外框要等下一次重繪才會消失。
+    // 平移會改 viewport、觸發重繪，這時草稿暫存在 panning 裡，外框仍不能出現。
+    await drawTwoAnchors()
+
+    middlePan()
+    await nextTick()
+    expect(selectionFrames()).toHaveLength(0)
+
+    releaseOnStage(450, 300, MIDDLE_UP)
+    await nextTick()
+    expect(selectionFrames()).toHaveLength(0)
+  })
+
+  it('剛切到 Pen 的同一個 tick 就開始草稿：watcher 執行時草稿不被收掉', async () => {
+    const store = await mountCanvas()
+
+    // 不等 nextTick：watcher 看到的是 Move → Pen，這時草稿已經存在。
+    useToolStore().setTool(ToolType.Pen)
+    press(100, 100)
+    releaseOnStage(100, 100)
+    press(200, 100)
+    releaseOnStage(200, 100)
+    await nextTick()
+
+    expect(previews()).toHaveLength(1)
+    expect(vectors(store)).toHaveLength(0)
+  })
+
+  it('同一個 tick 內切到 Pen、開始草稿、再切到其他工具：草稿完成，不留孤兒', async () => {
+    const store = await mountCanvas()
+
+    // watcher 只看到 Move → Rect，但草稿是在中間的 Pen 建立的。
+    useToolStore().setTool(ToolType.Pen)
+    press(100, 100)
+    releaseOnStage(100, 100)
+    press(200, 100)
+    releaseOnStage(200, 100)
+    useToolStore().setTool(ToolType.Rect)
+    await nextTick()
+
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(1)
+  })
+
+  // ── 保護既有行為 ──
+
+  it('按住 Space 時切換工具：草稿完成，放開 Space 是新工具', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    spaceDown()
+    await nextTick()
+    useToolStore().setTool(ToolType.Move)
+    await nextTick()
+    spaceUp()
+    await nextTick()
+
+    expect(useToolStore().activeTool).toBe(ToolType.Move)
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('直接切換工具：草稿完成', async () => {
+    const store = await mountCanvas()
+    await drawTwoAnchors()
+
+    useToolStore().setTool(ToolType.Rect)
+    await nextTick()
+
+    expect(previews()).toHaveLength(0)
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+
+  it('沒有草稿時中鍵平移：結束後是閒置狀態，Pen 點擊開始新草稿', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pen)
+    await nextTick()
+
+    middlePan()
+    releaseOnStage(450, 300, MIDDLE_UP)
+    expect(previews()).toHaveLength(0)
+
+    press(300, 300)
+    releaseOnStage(300, 300)
+    expect(previews()).toHaveLength(1)
+    expect(previewPoints()).toEqual([{ x: 250, y: 300 }])
+    expect(undoDepth(store)).toBe(0)
+  })
+
+  it('Pencil 拖曳中按 Space：照舊完成這一筆（D3）', async () => {
+    const store = await mountCanvas()
+    useToolStore().setTool(ToolType.Pencil)
+    await nextTick()
+
+    press(100, 100)
+    move(150, 120)
+    move(200, 140)
+    spaceDown()
+    await nextTick()
+
+    expect(vectors(store)).toHaveLength(1)
+    releaseOnStage(200, 140)
+    spaceUp()
+    await nextTick()
+    expect(vectors(store)).toHaveLength(1)
+    expect(undoDepth(store)).toBe(1)
+  })
+})
