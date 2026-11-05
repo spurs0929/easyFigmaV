@@ -482,6 +482,10 @@ easyFigmaV v1 刻意限制協作系統範圍。
 - 完整 RBAC
 - Invitation token / email invitation flow
 - Project ownership transfer
+- 登入後修改密碼
+- 忘記密碼 / Email 重設密碼
+- Email verification
+- Transactional email service
 
 這些限制讓 v1 先建立清楚的 Authentication、Authorization、Persistence 與
 Presence 邊界，再保留未來擴充多人即時協作的空間。
