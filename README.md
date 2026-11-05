@@ -22,14 +22,17 @@ Authorization、Comments、WebSocket Presence、CI 與 Observability。
 - 支援 Pen 向量路徑、閉合路徑與 Bezier 控制點預覽。
 - 支援 Pencil 自由手繪並轉換為 Vector 元素。
 - 支援單選、多選、框選、拖曳、resize。
-- 支援 Group / Ungroup、Duplicate、Delete 與圖層順序調整。
+- 支援 Group / Ungroup、Duplicate、Delete 與圖層順序調整；群組可整體移動、
+  複製、刪除與解散，目前不支援旋轉與縮放。
+- 支援 Copy / Cut / Paste（應用程式內的記憶體 Clipboard），同一帳號可跨專案貼上。
 - Layer Panel 使用 `byId + rootIds` 管理元素樹狀結構。
 - Properties Panel 支援位置、尺寸、旋轉、透明度、Fill、Stroke 與
   Typography。
 - 支援畫布內文字直接編輯。
-- 支援 snapshot-based Undo / Redo。
+- 支援 snapshot-based Undo / Redo，使用者認知的一次操作對應一筆 History。
 - 支援對齊輔助線、距離量測與 viewport culling。
-- 提供常用編輯器快捷鍵與暫時 Hand 工具操作。
+- 提供常用編輯器快捷鍵與暫時 Hand 工具操作；Pen 草稿在 Space 或中鍵平移後
+  會保留並可繼續繪製。
 
 ### Authentication
 
@@ -107,6 +110,24 @@ Authorization、Comments、WebSocket Presence、CI 與 Observability。
 
 ---
 
+## Keyboard Shortcuts
+
+macOS 以 Cmd 取代 Ctrl。
+
+| 操作                | 快捷鍵                      |
+| ------------------- | --------------------------- |
+| Undo                | Ctrl+Z                      |
+| Redo                | Ctrl+Y / Ctrl+Shift+Z       |
+| Copy / Cut / Paste  | Ctrl+C / Ctrl+X / Ctrl+V    |
+| Duplicate           | Ctrl+D                      |
+| Group / Ungroup     | Ctrl+G / Ctrl+Shift+G       |
+| 全選                | Ctrl+A                      |
+| 刪除                | Delete / Backspace          |
+| 移到最上層 / 最下層 | `]` / `[`                   |
+| 暫時平移            | 按住 Space 拖曳，或中鍵拖曳 |
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -176,20 +197,19 @@ API、`document_version` 與 optimistic locking 維持一致性。
 
 ## Engineering Highlights
 
-Topic Design
-
----
-
-Authentication Short-lived JWT + HttpOnly Refresh Token Rotation
-Password Security Argon2id
-Authorization Project membership-based authorization
-Document Consistency `document_version` optimistic locking
-Cloud Auto-save Single-flight + latest-value coalescing
-Real-time State WebSocket snapshot-based Presence + relayed remote cursor
-Database PostgreSQL + SQLAlchemy 2.0 async + Alembic
-Logging structlog + Request ID correlation
-Error Monitoring Sentry with sensitive-data filtering
-CI Frontend / Backend lint, test, migration and build checks
+| Topic                | Design                                                    |
+| -------------------- | --------------------------------------------------------- |
+| Authentication       | Short-lived JWT + HttpOnly Refresh Token Rotation         |
+| Password Security    | Argon2id                                                  |
+| Authorization        | Project membership-based authorization                    |
+| Document Consistency | `document_version` optimistic locking                     |
+| Cloud Auto-save      | Single-flight + latest-value coalescing                   |
+| Real-time State      | WebSocket snapshot-based Presence + relayed remote cursor |
+| Editor History       | Snapshot-based Undo / Redo with gesture commit boundaries |
+| Database             | PostgreSQL + SQLAlchemy 2.0 async + Alembic               |
+| Logging              | structlog + Request ID correlation                        |
+| Error Monitoring     | Sentry with sensitive-data filtering                      |
+| CI                   | Frontend / Backend lint, test, migration and build checks |
 
 ---
 
@@ -307,6 +327,61 @@ event、stack trace、Request ID 與敏感資料過濾。
 
 ---
 
+## Local Development
+
+需要 Node.js `>=24.22.1 <25`、Python 3.12 與 Docker。
+
+### Backend
+
+```bash
+cd server
+cp .env.example .env
+```
+
+`.env` 的 `SECRET_KEY` 與 `REFRESH_TOKEN_PEPPER` 必須填入兩個不同的值，可各執行
+一次以下指令產生：
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+接著啟動資料庫、套用 migration 並啟動 API：
+
+```bash
+docker compose up -d
+python -m venv .venv
+source .venv/bin/activate # Windows PowerShell：.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+alembic upgrade head
+uvicorn app.main:app --reload --port 8000
+```
+
+### Frontend
+
+在 repo 根目錄另開一個終端機：
+
+```bash
+npm ci
+npm run dev
+```
+
+開啟 <http://localhost:5173>。開發環境的 `/api` 與 Presence WebSocket 由 Vite
+proxy 轉到 `http://127.0.0.1:8000`，因此 refresh cookie 屬於第一方。
+
+### Tests
+
+```bash
+# Frontend（repo 根目錄）
+npm run test:unit:ci
+npm run type-check
+npm run lint:ci
+
+# Backend（server/，需要資料庫已啟動）
+pytest -q
+```
+
+---
+
 ## CI
 
 Frontend 與 Backend 使用分離的 GitHub Actions workflow。
@@ -349,6 +424,9 @@ Backend CI 將 migration validation 與 pytest schema 分開，避免 Alembic
 - Remote cursor protocol、relay、throttle 與 lifecycle
 - Frontend auth / session behavior
 - Editor stores and UI behavior
+- Undo / Redo History 邊界、Clipboard 與滑鼠手勢生命週期
+
+v1 封板時，Frontend 有 1135 個測試，Backend 有 363 個測試。
 
 WebSocket 除自動化測試外，也使用真實 Uvicorn server 進行 smoke
 test，補足測試 transport 與 production WebSocket stack
@@ -404,6 +482,31 @@ easyFigmaV v1 刻意限制協作系統範圍。
 這些限制讓 v1 先建立清楚的 Authentication、Authorization、Persistence 與
 Presence 邊界，再保留未來擴充多人即時協作的空間。
 
+### Known Limitations
+
+協作與授權：
+
+- 成員被移除後 REST 立即失效，但既有的 Presence WebSocket 不會被主動切斷，
+  要等重新連線時才會被拒絕。
+
+文件：
+
+- 文件載入會檢查元素 id 與 `rootIds`，但不偵測循環參照、父子雙向不一致，或同一個
+  child 掛在多個 parent。
+
+編輯器：
+
+- 群組不支援旋轉與縮放；舊資料中的群組 rotation 會保留，但一律視為 0。
+- 一般元素旋轉後，選取外框、把手與尺寸標籤仍停在未旋轉的位置。
+- Clipboard 與系統剪貼簿分開，不能和其他應用程式互相複製貼上；跨專案貼上的
+  元素可能落在目前畫面外。
+- 畫布上不支援 Shift+Click 加選。
+- 重新整理頁面後，視野會回到原點。
+- Pen 草稿期間，Undo 等會修改文件的快捷鍵會被忽略，目前沒有畫面提示。
+- Pencil / Pen 完成後維持原工具，不會自動切回 Move。
+- 文字以輸入法組字時若失去焦點，未選字會一併提交（在 Chrome 觀察到的行為）。
+- 屬性面板填入相同的值會多一筆 Undo。
+
 ---
 
 ## Technical Documentation
@@ -425,3 +528,4 @@ Presence 邊界，再保留未來擴充多人即時協作的空間。
 - [WebSocket Presence](./docs/11-websocket-presence.md)
 - [Comments](./docs/12-comments.md)
 - [v1 Architecture](./docs/13-v1-architecture.md)
+- [Editor State, Undo / Redo and Gesture Lifecycle](./docs/14-editor-history-and-gestures.md)
