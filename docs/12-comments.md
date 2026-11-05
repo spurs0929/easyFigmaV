@@ -20,8 +20,12 @@ Comment 屬於 project，因此 authorization 不是只驗證「comment id
 authentication ≠ resource authorization
 ```
 
-Owner / member 可依目前 project edit capability 操作；outsider 不應透過
-comment endpoint 得知不可存取 project 的內部 resource。
+Outsider 不應透過 comment endpoint 得知不可存取 project 的內部 resource。
+
+成員之間的權限依操作而不同：
+
+-   切換 `resolved`：任何成員。
+-   修改 `content`、刪除留言：只有作者，owner 不額外取得權限；其他成員收到 403。
 
 ## Content validation
 
@@ -80,20 +84,15 @@ Race regression test 應盡量透過資料庫狀態與既有 API boundary
 
 ## Frontend persistence boundary
 
-舊版 comment store 曾有獨立 localStorage persistence，同時 comment
-又可能出現在 document snapshot，形成兩份 local truth source。
-
-這會造成 cloud project → local draft 切換時的資料污染風險。
-
-後續設計原則是：
+Comment store 依來源分成兩種模式：
 
 ``` text
-local document state   → local persistence boundary
-cloud project comments → cloud comment API
+local → 跟著 DocumentSnapshot 存進 IndexedDB，另有一份 localStorage mirror
+cloud → 權威來源是 comments 資料表，不進 snapshot，也不寫 localStorage
 ```
 
-避免同一份 cloud comment 同時被 document snapshot、Pinia 與 localStorage
-各自當成 authoritative persistence。
+Cloud 模式下，Pinia 只保存最近一次 GET 的結果與之後成功的修改。這避免雲端留言
+在 cloud project → local draft 切換時污染本機草稿。
 
 ## Error semantics
 

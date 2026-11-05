@@ -58,13 +58,13 @@ Sentry 只有在設定 DSN 時啟用，並關閉預設 PII 收集與 request bod
 
 不同 sink 有不同用途：
 
-  Field          Server security log               Sentry
-  -------------- --------------------------------- ---------------------------------
-  `request_id`   keep                              keep
-  `family_id`    keep                              keep
-  `user_id`      keep                              keep as pseudonymous identifier
-  `client_ip`    keep for incident investigation   remove
-  credentials    remove                            remove
+| Field        | Server security log             | Sentry                          |
+| ------------ | ------------------------------- | ------------------------------- |
+| `request_id` | keep                            | keep                            |
+| `family_id`  | keep                            | keep                            |
+| `user_id`    | keep                            | keep as pseudonymous identifier |
+| `client_ip`  | keep for incident investigation | remove                          |
+| credentials  | remove                          | remove                          |
 
 這比「所有敏感資料一律刪除」更精確：資料是否保留取決於該 sink
 是否真的需要它。

@@ -48,10 +48,10 @@ PUT   /projects/{id}/document    → document snapshot + expected version
 
 理由不是 REST 形式偏好，而是 workload 不同：
 
-  操作         頻率    Payload Concurrency
-  ---------- ------ ---------- ------------------------
-  rename         低         小 last-write-wins 可接受
-  autosave       高   大 JSONB optimistic locking
+| 操作     | 頻率 | Payload  | Concurrency            |
+| -------- | ---- | -------- | ---------------------- |
+| rename   | 低   | 小       | last-write-wins 可接受 |
+| autosave | 高   | 大 JSONB | optimistic locking     |
 
 若混在同一支 PATCH，metadata update 可能被迫攜帶 document，或 handler
 需要處理大量互不相關的 optional branch。

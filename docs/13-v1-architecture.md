@@ -152,17 +152,15 @@ derived semantics。
 
 系統不是所有地方都追求同一種 consistency：
 
-Area Strategy Reason
-
----
-
-refresh rotation CAS + grace concurrent browser requests
-document save optimistic locking low expected write conflict
-cloud autosave single-flight + latest wins snapshot semantics
-presence full snapshot + seq ephemeral small state
-remote cursor relay + latest-value only best-effort, high frequency
-membership insert DB PK constraint race-safe uniqueness
-comment delete mutation rowcount check TOCTOU race
+| Area              | Strategy                    | Reason                      |
+| ----------------- | --------------------------- | --------------------------- |
+| refresh rotation  | CAS + grace                 | concurrent browser requests |
+| document save     | optimistic locking          | low expected write conflict |
+| cloud autosave    | single-flight + latest wins | snapshot semantics          |
+| presence          | full snapshot + seq         | ephemeral small state       |
+| remote cursor     | relay + latest-value only   | best-effort, high frequency |
+| membership insert | DB PK constraint            | race-safe uniqueness        |
+| comment delete    | mutation rowcount check     | TOCTOU race                 |
 
 這些不是不同工程師各寫一套，而是依 resource 的持久性、衝突成本與
 workload 選擇不同保證。

@@ -60,18 +60,6 @@ caller 提供的 AbortSignal 與 application timeout
 
 這避免 application 先把任意大小 body 全部讀入 memory 後才驗證。
 
-## Database deployment
-
-Database connection configuration 集中處理：
-
--   asyncpg scheme normalization
--   TLS policy
--   PgBouncer compatibility
--   connection health configuration
-
-Deployment-specific secret 只透過 environment variables 注入，不寫入
-repository。
-
 ## 取捨
 
 v1 優先選擇能清楚解釋、能測試的 deployment topology，而不是提早引入

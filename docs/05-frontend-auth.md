@@ -101,11 +101,3 @@ client：非同步結果必須確認自己仍屬於目前 lifecycle。
 
 如此 `/auth/me`、logout-all 等需要有效 access token 的 auth endpoint
 仍能在 access token 過期時正常 refresh + retry。
-
-## CSRF header
-
-Client 統一帶 `X-Requested-With`，讓跨 origin credentialed request
-先經過 CORS preflight。
-
-代價是多 OPTIONS request；好處是規則一致，不依賴每個 caller 記得哪些
-endpoint 使用 cookie credential。

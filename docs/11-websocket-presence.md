@@ -394,16 +394,14 @@ document collaboration 是不同問題。
 
 主要 close code：
 
-Code Meaning
-
----
-
-4400 protocol error（含不合法的 cursor message）
-4401 authentication failure
-4404 project missing or inaccessible
-4408 auth timeout
-1009 message too large
-1011 server/send failure
+| Code | Meaning                                     |
+| ---- | ------------------------------------------- |
+| 4400 | protocol error（含不合法的 cursor message） |
+| 4401 | authentication failure                      |
+| 4404 | project missing or inaccessible             |
+| 4408 | auth timeout                                |
+| 1009 | message too large                           |
+| 1011 | server/send failure                         |
 
 Project 不存在與 caller 非 member 共用 4404，延續 REST anti-enumeration
 semantics。
@@ -440,7 +438,7 @@ endpoint → Redis-backed PresenceManager
 的 presence / cursor synchronization 不在 v1 scope：不同 instance 上的
 使用者彼此看不到對方，也收不到對方的游標。
 
-另外，feature-freeze 版本的既有 WebSocket connection 不會持續重新驗證
+另外，既有 WebSocket connection 不會持續重新驗證
 token / membership；若 member 在連線期間被移除，REST access
 已失效，但既有 presence connection 的 runtime revocation
 需要額外機制。v1 將此列為已知限制，而不是宣稱已提供 continuous
@@ -457,8 +455,6 @@ reconnect 會被 4404 拒絕。
 - **Server 沒有 cursor rate limiting。** 正常 client 自己節流；不守
   規矩的 client 可以送得更快。Outbox coalescing 限制了 server 端的
   pending work，但不限制 inbound 頻率。
-- **Cursor position 不保存。** 晚加入或重連後，要等對方再次移動才
-  看得到游標。
 - **Cursor 與 snapshot 之間沒有 cross-message-type ordering
   guarantee。** 兩者走不同的送出路徑；user 離線時，已在傳送途中的
   cursor 可能比「他已離線」的 snapshot 晚到。Client 以名單為準，
@@ -469,11 +465,6 @@ reconnect 會被 4404 拒絕。
   直到該 user 的任一分頁再送出 cursor，或他完全離線。
 - **顏色可能撞色。** Palette 只有 12 色，不同 user 可能得到相同
   顏色，以 display name 輔助辨識。
-- **沒有 smoothing / interpolation。** 游標以約 20Hz 跳動更新。
-- **沒有 idle timeout。** 停著不動的游標會一直顯示。
-- **部署時的舊分頁。** Cursor 上線前載入的舊版 client 會把
-  `presence.cursor` 視為 protocol error 而停止 presence，重新整理後
-  恢復。
 
 ## Testing
 

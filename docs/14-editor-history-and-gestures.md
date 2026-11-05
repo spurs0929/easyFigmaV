@@ -1,7 +1,6 @@
 # Editor State, Undo / Redo and Gesture Lifecycle
 
-對照版本：`main @ 46a24fe`。本文描述已實作的行為與設計理由；未實作的部分
-集中在「已知限制」。
+本文描述已實作的行為與設計理由；未實作的部分集中在「已知限制」。
 
 ## 範圍
 
@@ -95,11 +94,14 @@ History、`documentRevision` 的提交邊界與 autosave 排程應該對應到�
 | 拖曳、縮放                    | 過程 `update()`，放開時提交                          | 1 筆；回到原狀時 0 筆            |
 | 屬性面板                      | `change` 事件才 `commitUpdate()`                     | 每次確認 1 筆                    |
 | 色彩選擇器                    | 預覽用 `update()`，關閉時顏色有變才 `pushSnapshot()` | 1 筆                             |
-| 文字編輯                      | 文字有變才 `update()` + `pushSnapshot()`             | 1 筆（新增文字見已知限制）       |
+| 文字編輯                      | 文字有變才 `update()` + `pushSnapshot()`             | 1 筆；新增文字見下方             |
 
 `ungroupMany()` 是這個原則的典型做法：在同一份工作副本（`byId`、`rootIds`
 的淺拷貝）上依序套用每個群組的轉換，最後才寫入 store 一次、推快照一次、遞增
 revision 一次。`ungroup(id)` 委派給 `ungroupMany([id])`，避免兩份實作分歧。
+
+新增文字與首次編輯合併為一筆 History；留空或按 Escape 時取消建立，不留下元素，
+也不產生 History。
 
 選取變化不屬於文件，不產生 History。
 
@@ -161,8 +163,8 @@ autosave 當成新內容存出去。History 也不是多人同步的 operation l
 `useCanvasKeyboard.ts` 的快捷鍵表每一項都必須標明 `modifiesDocument`：
 
 - 會改文件（手勢中忽略）：Delete、Backspace、Ctrl+Z、Ctrl+Y、
-  Ctrl+Shift+Z、Ctrl+D、Ctrl+G、Ctrl+Shift+G、`]`、`[`。
-- 不改文件（照常可用）：Ctrl+A。
+  Ctrl+Shift+Z、Ctrl+D、Ctrl+X、Ctrl+V、Ctrl+G、Ctrl+Shift+G、`]`、`[`。
+- 不改文件（照常可用）：Ctrl+A、Ctrl+C。
 - 已註冊的快捷鍵一律 `preventDefault()`，包括被忽略的時候，避免落到瀏覽器
   預設行為。
 - 焦點在輸入框、textarea 時整張表都不處理，交給原生編輯行為。
@@ -185,6 +187,9 @@ autosave 當成新內容存出去。History 也不是多人同步的 operation l
 Pen 是跨多次點擊的手勢，兩次點擊之間（草稿）也算手勢，以上文件命令都會被忽略。
 Pen 自己處理幾個按鍵：Escape 取消、Enter 完成、Backspace / Delete 刪掉最後
 一個錨點。Ctrl+Z 不會退回上一個錨點，Pen 草稿不進 History。
+
+Space 或中鍵平移時，草稿暫存在 panning 手勢裡，放開後還原；平移期間 Enter、
+Escape、Backspace 不作用。平移中若切換到其他工具，草稿會先存成 Vector。
 
 ## 漏接 mouseup 的手勢收尾
 
@@ -254,8 +259,6 @@ mouseup，手勢會卡在進行中，之後的快捷鍵守衛也會一直擋住 
 
 History 相關：
 
-- 新增文字會產生兩筆 History（建立空的 Text、確認文字各一筆）；文字留空會被
-  刪除，之後 Undo 會讓空的 Text 重新出現。修正需要調整文字編輯的生命週期。
 - 屬性面板填入與目前相同的值仍會多一筆 History。
 - 色彩選擇器預覽後改回原本的顏色再關閉：不推 History，但 store 已是新物件，
   之後下一次 `pushSnapshot()` 可能多一筆空白 History。
@@ -264,11 +267,8 @@ History 相關：
 
 非 History，但與文件正確性相關：
 
-- Ctrl+D 複製巢狀群組時只為直接子元素建立新 id；子群組的複本仍指向原本的
-  孫元素，兩邊共用，刪除複本會一併刪掉原群組的內容。在圖層面板選取群組內的
-  子元素按 Ctrl+D，會產生孤兒節點。
-- 文件載入只驗證欄位型別，不驗證樹狀結構（循環參照、父子不一致、同一個 child
-  掛在多個 parent）；不合法的文件載入後，刪除操作可能堆疊溢位。
+- 文件載入會檢查元素 id 與 `rootIds`，但不偵測循環參照、父子雙向不一致，或同一個
+  child 掛在多個 parent；不合法的文件載入後，刪除操作可能堆疊溢位。
 - 元件卸載時不替進行中的手勢收尾（只會在按住滑鼠時離開頁面發生，下次載入時
   History 本來就會重設）。
 - 右鍵選單的操作不經過快捷鍵守衛；實務上點選選單需要左鍵，會先結束拖曳。
@@ -283,7 +283,7 @@ History 相關：
 - `src/components/canvas/CanvasArea.spec.ts`：以真實 DOM 事件經過 Konva 的手勢
   生命週期，包含畫布外放開、mouseup 被攔下、按鍵交錯、mousemove 收尾。
 
-Undo 與手勢相關的修正（Batch 2、U3 系列）都先確認新測試在修正前的原始碼上
+Undo 與手勢相關的修正都先確認新測試在修正前的原始碼上
 失敗，並以 mutation（逐一拿掉修正的各個部分）確認測試真的保護得到該行為。
 
 新增會修改文件的功能時：
