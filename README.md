@@ -7,6 +7,10 @@ easyFigmaV 是一個以 **Vue 3 + TypeScript + Konva** 建構編輯器前端，�
 專案除了畫布編輯，也實作 Authentication、Cloud Persistence、Membership
 Authorization、Comments、WebSocket Presence、CI 與 Observability。
 
+**Live Demo：** <https://easyfigma-web.onrender.com/>
+
+> Demo 部署在 Render 免費方案，閒置後第一次連線可能需要等後端冷啟動。
+
 > 目前多人功能定位為 **Presence（在線成員與 remote cursor）**，不是 CRDT /
 > Operation-based 的多人即時共同編輯。看得到其他成員的游標，不代表文件
 > 內容會即時同步。
