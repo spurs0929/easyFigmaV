@@ -45,7 +45,7 @@ async function signIn(): Promise<void> {
       <span>使用 Google 登入</span>
     </Button>
 
-    <div class="divider" role="separator"><span>或使用 Email</span></div>
+    <div class="auth-divider" role="separator"><span>或使用 Email</span></div>
   </div>
 </template>
 
@@ -63,7 +63,9 @@ async function signIn(): Promise<void> {
   margin-right: 8px;
 }
 
-.divider {
+// 不叫 .divider：EditorToolbar.scss 有一個全域的 .divider（寬 24px 的工具列分隔線），
+// 先開過編輯器再進登入頁時會套到這裡，把整條分隔線縮成 24px 寬。
+.auth-divider {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -76,6 +78,11 @@ async function signIn(): Promise<void> {
     flex: 1;
     height: 1px;
     background: #2a2a2a;
+  }
+
+  span {
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 }
 </style>
