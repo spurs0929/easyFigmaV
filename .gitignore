@@ -58,3 +58,9 @@ __screenshots__/
 
 # Claude
 claude.md
+
+# Firebase CLI
+.firebase/
+.firebaserc
+firebase-debug.log
+firestore-debug.log

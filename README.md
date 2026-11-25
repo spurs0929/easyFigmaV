@@ -11,6 +11,9 @@ Authorization、Comments、WebSocket Presence、CI 與 Observability。
 
 > Demo 部署在 Render 免費方案，閒置後第一次連線可能需要等後端冷啟動。
 
+> **firebase-demo 分支**：後端改用 Firebase Authentication + Firestore，部署在 Firebase Hosting，
+> 沒有冷啟動。差異與部署步驟見 [docs/15-firebase-demo.md](docs/15-firebase-demo.md)。
+
 > 目前多人功能定位為 **Presence（在線成員與 remote cursor）**，不是 CRDT /
 > Operation-based 的多人即時共同編輯。看得到其他成員的游標，不代表文件
 > 內容會即時同步。

@@ -1,4 +1,28 @@
+import { FirebaseError } from 'firebase/app'
 import { ApiError } from '@/services/api'
+
+/**
+ * Firebase Auth / Firestore 的錯誤代碼 → 使用者看得懂的訊息。
+ *
+ * auth/invalid-credential 刻意不區分「帳號不存在」與「密碼錯誤」，
+ * 跟 FastAPI 版登入失敗的訊息一致，避免被用來列舉已註冊的 email。
+ */
+const FIREBASE_MESSAGES: Record<string, string> = {
+  'auth/invalid-credential': 'Email 或密碼錯誤',
+  'auth/wrong-password': 'Email 或密碼錯誤',
+  'auth/user-not-found': 'Email 或密碼錯誤',
+  'auth/invalid-email': 'Email 格式不正確',
+  'auth/email-already-in-use': '這個 Email 已經註冊過',
+  'auth/weak-password': '密碼強度不足',
+  'auth/too-many-requests': '嘗試次數過多，請稍後再試',
+  'auth/user-disabled': '這個帳號已被停用',
+  'auth/network-request-failed': '無法連線到伺服器，請檢查網路連線',
+  'permission-denied': '你沒有權限執行這個動作',
+  'not-found': '找不到這筆資料',
+  unavailable: '無法連線到伺服器，請檢查網路連線',
+  'deadline-exceeded': '伺服器沒有回應，請稍後再試',
+  'resource-exhausted': '使用量已達上限，請稍後再試',
+}
 
 /** 從 FastAPI 的 422 回應裡取出第一個出錯的欄位名稱。 */
 function firstInvalidField(payload: unknown): string | null {
@@ -21,6 +45,10 @@ const FIELD_MESSAGES: Record<string, string> = {
 
 /** 把各種失敗轉成可以直接顯示的訊息。 */
 export function describeError(error: unknown): string {
+  if (error instanceof FirebaseError) {
+    return FIREBASE_MESSAGES[error.code] ?? `操作失敗（${error.code}）`
+  }
+
   if (error instanceof ApiError) {
     if (error.status === 429) return '嘗試次數過多，請稍後再試'
 

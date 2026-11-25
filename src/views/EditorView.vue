@@ -9,6 +9,7 @@ import DesktopOnlyNotice from '@/components/editor/DesktopOnlyNotice.vue'
 import AppDialog from '@/components/common/AppDialog.vue'
 import DialogActions from '@/components/common/DialogActions.vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
+import { PRESENCE_ENABLED } from '@/config/app'
 import { createCloudDocumentBackend, localDocumentBackend } from '@/services/documentBackend'
 import { useCommentStore } from '@/store/comment'
 import { useDocumentStore } from '@/store/document'
@@ -46,7 +47,8 @@ onMounted(async () => {
   const loaded = await documentStore.startPersistence(createCloudDocumentBackend(projectId))
   if (!loaded || unmounted) return
 
-  presenceStore.connect(projectId)
+  // firebase-demo：Presence 尚未移植到 Firebase，先不連線。
+  if (PRESENCE_ENABLED) presenceStore.connect(projectId)
   // 留言是專案底下的獨立資源，不跟著 document 一起回來，要自己載入。
   // 與 presence 同一個時機、同一個理由：文件載入成功才代表專案存在而且有權限。
   // 不 await：留言載入失敗不該擋住編輯器，錯誤由 comment store 自己呈現。
@@ -58,7 +60,7 @@ onUnmounted(() => {
   // 留言不需要另外清：stopPersistence 離開雲端時會把 comment store 換回本機來源，
   // 那一步會清掉雲端留言並讓飛行中的留言請求作廢。
   documentStore.stopPersistence()
-  if (projectId) presenceStore.disconnect()
+  if (projectId && PRESENCE_ENABLED) presenceStore.disconnect()
 })
 </script>
 

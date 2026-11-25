@@ -41,9 +41,6 @@ let tokenCount = 0
 function session(userId: string): Session {
   tokenCount += 1
   return {
-    access_token: `token-${tokenCount}`,
-    token_type: 'bearer',
-    expires_in: 900,
     user: user(userId),
   }
 }

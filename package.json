@@ -17,11 +17,14 @@
     "lint:ci": "run-s --continue-on-error lint:ci:*",
     "lint:ci:oxlint": "oxlint . --deny-warnings",
     "lint:ci:eslint": "eslint . --max-warnings 0",
-    "format": "prettier --write --experimental-cli src/"
+    "format": "prettier --write --experimental-cli src/",
+    "deploy": "npm run build && firebase deploy --only hosting,firestore:rules",
+    "deploy:rules": "firebase deploy --only firestore:rules"
   },
   "dependencies": {
     "@primevue/themes": "^4.5.4",
     "autoprefixer": "^10.4.27",
+    "firebase": "^13.4.0",
     "konva": "^10.2.3",
     "pinia": "^3.0.4",
     "postcss": "^8.5.8",

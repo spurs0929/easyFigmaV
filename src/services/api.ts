@@ -1,7 +1,23 @@
-import { API_TIMEOUT_MS, REFRESH_MAX_RETRIES, REFRESH_RETRY_DELAY_MS } from '@/config/app'
-import { apiUrl } from '@/config/env'
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  type User as FirebaseUser,
+} from 'firebase/auth'
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { db, firebaseAuth } from '@/services/firebase'
 
-// 設計背景與取捨見 docs/02-auth.md。
+// firebase-demo 分支：認證改由 Firebase Authentication 負責。
+//
+// 原本 FastAPI 版自己實作的 access token（記憶體）、HttpOnly refresh cookie、
+// refresh rotation、single-flight、session generation guard，在這裡全部交給
+// Firebase SDK：它把 refresh token 存在 IndexedDB，ID token 到期前自動換新。
+//
+// 對外的函式名稱與型別刻意維持不變，store 與元件不需要知道背後換了實作。
+// 取捨：省下自己維護 token 生命週期，代價是失去 token family、重放偵測與
+// 「登出所有裝置」這類伺服器端控制（後者需要 Admin SDK，純前端做不到）。
 
 // ─────────────────────────── 型別 ───────────────────────────
 
@@ -13,12 +29,13 @@ export interface User {
 }
 
 export interface Session {
-  access_token: string
-  token_type: string
-  expires_in: number
   user: User
 }
 
+/**
+ * 保留 FastAPI 版的錯誤型別：Firestore service 層把「找不到 / 沒權限 / 版本衝突」
+ * 也轉成同樣的 status，store 裡判斷 404、409 的邏輯就不用改。
+ */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -32,46 +49,36 @@ export class ApiError extends Error {
 
 // ─────────────────────────── 狀態 ───────────────────────────
 
-// access token 僅保存在記憶體，不寫入 Web Storage。頁面重載後透過 HttpOnly
-// refresh cookie 恢復 session，降低長期憑證被前端 JavaScript 直接讀取的風險。
-let accessToken: string | null = null
-
-// 合併同一 runtime 內的並行 refresh，避免 token rotation 互相衝突。
-let refreshInFlight: Promise<Session | null> | null = null
-
-// App 啟動期間只執行一次 silent refresh。
-let bootstrapPromise: Promise<Session | null> | null = null
-
-// 每次 session 狀態改變就遞增。飛行中的 refresh 會記下開始時的世代，
-// 回來時若已不符就丟棄結果——否則登出後才回來的 refresh 會把 session 復活。
-let sessionGeneration = 0
-
 type SessionListener = (session: Session | null) => void
 const listeners = new Set<SessionListener>()
 
-/** 訂閱 session 變化。登入、輪替成功與失效時都會通知。回傳取消訂閱的函式。 */
+/** 最近一次通知出去的使用者，用來過濾 onAuthStateChanged 的重複事件。 */
+let publishedUid: string | null | undefined = undefined
+
+let bootstrapPromise: Promise<Session | null> | null = null
+
+/** 訂閱 session 變化。登入、登出與 token 失效時都會通知。回傳取消訂閱的函式。 */
 export function onSessionChange(listener: SessionListener): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
 }
 
-/**
- * 讓所有飛行中的 refresh 失效。
- *
- * publish() 也會遞增世代，但那是在狀態真的改變之後。使用者按下登出的當下就
- * 已經表達了意圖，這段期間回來的 refresh 不該把 session 復活——即使最終狀態
- * 仍然正確，UI 也會閃一下登入狀態。
- */
-function invalidatePendingRefresh(): void {
-  sessionGeneration += 1
+function toUser(user: FirebaseUser): User {
+  const created = user.metadata.creationTime
+  return {
+    id: user.uid,
+    email: user.email ?? '',
+    display_name: user.displayName,
+    created_at: created ? new Date(created).toISOString() : new Date().toISOString(),
+  }
+}
+
+function toSession(user: FirebaseUser | null): Session | null {
+  return user ? { user: toUser(user) } : null
 }
 
 function publish(session: Session | null): void {
-  // 這裡也遞增是安全網：日後新增任何改變 session 的路徑，都會自動讓
-  // 飛行中的 refresh 失效，不必記得手動呼叫 invalidatePendingRefresh()。
-  sessionGeneration += 1
-  accessToken = session?.access_token ?? null
-
+  publishedUid = session?.user.id ?? null
   for (const listener of listeners) {
     // Listener 失敗不應影響其他訂閱者與 session flow。
     try {
@@ -82,202 +89,101 @@ function publish(session: Session | null): void {
   }
 }
 
+// 其他分頁登出、refresh token 被撤銷（例如在 Console 停用帳號）時，
+// SDK 會觸發這個事件。只在「換了一個人」時通知：login() 自己已經 publish 過，
+// 不需要再通知一次。
+onAuthStateChanged(firebaseAuth, (user) => {
+  const uid = user?.uid ?? null
+  if (publishedUid === undefined || uid === publishedUid) return
+  publish(toSession(user))
+})
+
+/** 目前登入者的 uid。Firestore service 用來組查詢與寫入作者。 */
+export function requireUid(): string {
+  const uid = firebaseAuth.currentUser?.uid
+  if (!uid) throw new ApiError(401, '請先登入')
+  return uid
+}
+
+/** Presence 仍引用這兩個函式；Firebase 版 Presence 未啟用，回傳值不會被使用。 */
 export function getAccessToken(): string | null {
-  return accessToken
+  return null
 }
 
-// ─────────────────────────── 底層請求 ───────────────────────────
-
-interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
-  json?: unknown
-  signal?: AbortSignal
-  /** 內部使用：避免 401 重試無限遞迴。 */
-  _retried?: boolean
-  /** 內部使用：這個請求的 401 是預期結果，不應觸發 silent refresh。 */
-  _skipRefresh?: boolean
-}
-
-function buildSignal(caller?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(API_TIMEOUT_MS)
-  // 組合而非取代：caller 傳入自己的 signal 時，逾時仍需生效。
-  return caller ? AbortSignal.any([caller, timeout]) : timeout
-}
-
-async function rawFetch(path: string, options: RequestOptions): Promise<Response> {
-  const headers: Record<string, string> = {
-    // Cookie-based auth 端點要求此 header，搭配 CORS allowlist 作為 CSRF 防護。
-    'X-Requested-With': 'XMLHttpRequest',
-  }
-
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
-  if (options.json !== undefined) headers['Content-Type'] = 'application/json'
-
-  return fetch(apiUrl(path), {
-    method: options.method ?? 'GET',
-    headers,
-    body: options.json !== undefined ? JSON.stringify(options.json) : undefined,
-    // refresh token 使用 cookie，跨來源請求需明確包含 credentials。
-    credentials: 'include',
-    signal: buildSignal(options.signal),
-  })
-}
-
-async function toError(response: Response): Promise<ApiError> {
-  let detail = `請求失敗（${response.status}）`
-  let payload: unknown
-
-  try {
-    payload = await response.json()
-    const body = payload as { detail?: unknown }
-    if (typeof body.detail === 'string') {
-      detail = body.detail
-    } else if (Array.isArray(body.detail)) {
-      // FastAPI validation error：取第一筆訊息。
-      const first = body.detail[0] as { msg?: string } | undefined
-      if (first?.msg) detail = first.msg
-    }
-  } catch {
-    // 非 JSON 回應時保留預設錯誤訊息。
-  }
-
-  return new ApiError(response.status, detail, payload)
-}
-
-// ─────────────────────────── refresh ───────────────────────────
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-async function attemptRefresh(
-  attempt = 0,
-  generation = sessionGeneration,
-): Promise<Session | null> {
-  if (generation !== sessionGeneration) return null
-
-  const response = await rawFetch('/auth/refresh', { method: 'POST' })
-
-  // 409 表示 refresh token 已被其他並行請求輪替，常見於多分頁同時 refresh。
-  // 後端不視為重放攻擊，因此允許短暫延遲後重試。
-  if (response.status === 409 && attempt < REFRESH_MAX_RETRIES) {
-    await sleep(REFRESH_RETRY_DELAY_MS * (attempt + 1))
-    // 睡眠期間可能發生登入或登出，此時不該再送一次 refresh——那會在後端
-    // 真的輪替掉一組 token。
-    if (generation !== sessionGeneration) return null
-    return attemptRefresh(attempt + 1, generation)
-  }
-
-  // 這個請求飛行期間發生過登入或登出，結果已經過期，直接丟棄。
-  if (generation !== sessionGeneration) return null
-
-  if (!response.ok) {
-    // 只有後端明確表示憑證無效時才清除 session。5xx 與 429 是暫時性故障，
-    // Render 免費方案冷啟動時尤其常見，當成登出會讓使用者莫名被踢出去。
-    if (response.status === 401 || response.status === 403) {
-      publish(null)
-      return null
-    }
-    throw await toError(response)
-  }
-
-  const session = (await response.json()) as Session
-  publish(session)
-  return session
-}
-
-/** 換取新的 access token。並行呼叫共用同一個請求。 */
-export function refreshSession(): Promise<Session | null> {
-  refreshInFlight ??= attemptRefresh().finally(() => {
-    refreshInFlight = null
-  })
-  return refreshInFlight
+export async function refreshSession(): Promise<Session | null> {
+  return toSession(firebaseAuth.currentUser)
 }
 
 /**
- * 啟動時嘗試恢復 session，整個 app 生命週期只執行一次。
+ * 啟動時恢復 session，整個 app 生命週期只執行一次。
  * router guard 必須 await 此 promise 再判斷登入狀態。
+ *
+ * authStateReady() 會等 SDK 從 IndexedDB 讀回上次的登入狀態，
+ * 角色等同 FastAPI 版的 silent refresh。
  */
 export function ensureBootstrapped(): Promise<Session | null> {
-  bootstrapPromise ??= refreshSession()
+  bootstrapPromise ??= firebaseAuth.authStateReady().then(() => {
+    const session = toSession(firebaseAuth.currentUser)
+    publishedUid = session?.user.id ?? null
+    return session
+  })
   return bootstrapPromise
 }
 
-// ─────────────────────────── 對外的請求函式 ───────────────────────────
-
-/** 發送 API 請求。401 時共用 single-flight refresh，成功後僅重試原請求一次。 */
-export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const response = await rawFetch(path, options)
-
-  if (response.status === 401 && !options._retried && !options._skipRefresh) {
-    const session = await refreshSession()
-    if (!session) throw await toError(response)
-    return apiFetch<T>(path, { ...options, _retried: true })
-  }
-
-  if (!response.ok) throw await toError(response)
-  if (response.status === 204) return undefined as T
-
-  return (await response.json()) as T
-}
-
-// ─────────────────────────── 認證端點 ───────────────────────────
+// ─────────────────────────── 認證 ───────────────────────────
 
 export async function register(input: {
   email: string
   password: string
   display_name?: string
 }): Promise<Session> {
-  const session = await apiFetch<Session>('/auth/register', {
-    method: 'POST',
-    json: input,
-    // 註冊回 401 不可能是 access token 過期，不該觸發 refresh。
-    _skipRefresh: true,
+  const { user } = await createUserWithEmailAndPassword(firebaseAuth, input.email, input.password)
+  if (input.display_name) {
+    await updateProfile(user, { displayName: input.display_name })
+  }
+
+  // Firebase Auth 不能用 email 反查使用者（那需要 Admin SDK），
+  // 邀請成員時要靠這份公開的使用者名片。
+  await setDoc(doc(db, 'users', user.uid), {
+    email: user.email ?? input.email,
+    email_lower: (user.email ?? input.email).toLowerCase(),
+    display_name: input.display_name ?? null,
+    created_at: serverTimestamp(),
   })
+
+  const session = toSession(user)!
   publish(session)
   return session
 }
 
 export async function login(input: { email: string; password: string }): Promise<Session> {
-  const session = await apiFetch<Session>('/auth/login', {
-    method: 'POST',
-    json: input,
-    // 401 就是帳密錯誤，不該觸發 refresh。
-    _skipRefresh: true,
-  })
+  const { user } = await signInWithEmailAndPassword(firebaseAuth, input.email, input.password)
+  const session = toSession(user)!
   publish(session)
   return session
 }
 
-/**
- * 登出這個裝置。
- *
- * 產品決策：不論伺服器端成功與否，請求結束後一律回到未登入狀態。
- * 注意這是「請求結束後」而非「按下當下」——等待期間 UI 仍是登入狀態，
- * 呼叫端應該顯示 loading。
- *
- * 代價：若失敗原因是網路或伺服器問題而非 cookie 失效，refresh cookie 仍然
- * 有效，重新載入頁面會恢復登入。呼叫端可以捕捉例外並提示使用者重試。
- */
+/** 登出這個裝置。不論成功與否，一律回到未登入狀態。 */
 export async function logout(): Promise<void> {
-  invalidatePendingRefresh()
-
   try {
-    await apiFetch<void>('/auth/logout', { method: 'POST' })
+    await signOut(firebaseAuth)
   } finally {
     publish(null)
   }
 }
 
-/** 登出所有裝置。與 logout 相同的取捨。 */
+/**
+ * 登出所有裝置。
+ *
+ * Firebase 用戶端 SDK 沒有撤銷其他裝置 refresh token 的 API（需要 Admin SDK 的
+ * revokeRefreshTokens），這裡只能登出目前裝置。
+ */
 export async function logoutAll(): Promise<void> {
-  invalidatePendingRefresh()
-
-  try {
-    await apiFetch<void>('/auth/logout-all', { method: 'POST' })
-  } finally {
-    publish(null)
-  }
+  await logout()
 }
 
-export function fetchMe(): Promise<User> {
-  return apiFetch<User>('/auth/me')
+export async function fetchMe(): Promise<User> {
+  const user = firebaseAuth.currentUser
+  if (!user) throw new ApiError(401, '請先登入')
+  return toUser(user)
 }

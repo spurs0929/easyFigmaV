@@ -52,3 +52,10 @@ export const PRESENCE_RECONNECT_MAX_DELAY_MS = 30_000
  * server 沒有頻率限制，這裡是唯一的節流。
  */
 export const PRESENCE_CURSOR_THROTTLE_MS = 50
+
+/**
+ * firebase-demo：Presence（在線成員與 remote cursor）原本走 FastAPI 的 WebSocket，
+ * Firebase 版尚未實作，先關閉。之後若要做，建議改用 Realtime Database 的
+ * onDisconnect()，它就是為「斷線自動清掉在線狀態」設計的。
+ */
+export const PRESENCE_ENABLED = false

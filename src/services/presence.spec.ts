@@ -71,11 +71,8 @@ function cursorLeave(projectId = PROJECT_A) {
   return { type: 'presence.cursor.leave', project_id: projectId, user_id: OTHER }
 }
 
-function fakeSession(token: string): Session {
+function fakeSession(_token: string): Session {
   return {
-    access_token: token,
-    token_type: 'bearer',
-    expires_in: 900,
     user: { id: USER, email: 'a@example.com', display_name: null, created_at: '' },
   }
 }

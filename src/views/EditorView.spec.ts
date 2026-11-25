@@ -32,6 +32,11 @@ const fake = vi.hoisted(() => {
 })
 
 vi.mock('@/services/presence', () => ({ presenceClient: fake.client }))
+// firebase-demo 預設關閉 Presence；這裡測的是「開啟時」的連線時機，所以強制打開。
+vi.mock('@/config/app', async () => ({
+  ...(await vi.importActual<typeof import('@/config/app')>('@/config/app')),
+  PRESENCE_ENABLED: true,
+}))
 vi.mock('@/services/api', () => ({ onSessionChange: () => () => {} }))
 vi.mock('@/store/document', () => ({ useDocumentStore: () => fake.documentStore }))
 vi.mock('@/services/documentBackend', () => ({

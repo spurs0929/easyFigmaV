@@ -1,0 +1,119 @@
+rules_version = '2';
+
+// easyFigmaV firebase-demo 的授權規則。
+//
+// 這份檔案取代 FastAPI 版 deps.py / projects.py / members.py / comments.py 裡的
+// 權限判斷：前端 service 層的檢查只為了給出好讀的錯誤訊息，真正的防線在這裡。
+// 任何人都能拿公開的 Firebase config 直接呼叫 Firestore，繞過我們的前端。
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function changedOnly(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+
+    // ─── 使用者名片：邀請成員時用 email 反查 uid ─────────────────────
+    // 取捨：登入者都能讀所有人的 email 與顯示名稱。demo 可以接受；
+    // 正式產品應改由 Cloud Functions 代查，不直接開放讀取。
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.email_lower == request.resource.data.email.lower();
+      allow delete: if false;
+    }
+
+    // ─── 專案 ─────────────────────────────────────────────────────
+    match /projects/{projectId} {
+
+      function isMember() {
+        return signedIn() && request.auth.uid in resource.data.member_ids;
+      }
+
+      function isOwner() {
+        return signedIn() && request.auth.uid == resource.data.owner_id;
+      }
+
+      function validName(name) {
+        return name is string && name.size() > 0 && name.size() <= 120;
+      }
+
+      function validDocument(document) {
+        // 單一 Firestore 文件上限 1 MiB，預留空間給其他欄位。
+        return document is string && document.size() < 900000;
+      }
+
+      // 讀：只有成員（含 owner）。listProjects 的 array-contains 查詢符合這個條件才會被放行。
+      allow read: if isMember();
+
+      // 建立：建立者必須是 owner，且一開始只有自己一個成員、版本從 0 開始。
+      allow create: if signedIn()
+        && request.resource.data.owner_id == request.auth.uid
+        && request.resource.data.member_ids == [request.auth.uid]
+        && request.resource.data.document_version == 0
+        && validName(request.resource.data.name)
+        && validDocument(request.resource.data.document);
+
+      // 更新分成三種，各自只允許動特定欄位：
+      allow update: if
+        // 1. 存檔（成員）：版本只能 +1，對應 FastAPI 版的 compare-and-set。
+        (isMember()
+          && changedOnly(['document', 'document_version', 'updated_at'])
+          && request.resource.data.document_version == resource.data.document_version + 1
+          && validDocument(request.resource.data.document))
+        // 2. 改名（成員）：不動 document_version。
+        || (isMember()
+          && changedOnly(['name', 'updated_at'])
+          && validName(request.resource.data.name))
+        // 3. 管理成員（owner）：owner 必須留在名單裡。
+        || (isOwner()
+          && changedOnly(['member_ids'])
+          && resource.data.owner_id in request.resource.data.member_ids);
+
+      allow delete: if isOwner();
+
+      // ─── 留言：projects/{id}/comments ──────────────────────────────
+      match /comments/{commentId} {
+
+        function project() {
+          return get(/databases/$(database)/documents/projects/$(projectId)).data;
+        }
+
+        function isProjectMember() {
+          return signedIn() && request.auth.uid in project().member_ids;
+        }
+
+        function isAuthor() {
+          return request.auth.uid == resource.data.author.user_id;
+        }
+
+        function validContent(content) {
+          return content is string && content.size() > 0 && content.size() <= 2000;
+        }
+
+        allow read: if isProjectMember();
+
+        allow create: if isProjectMember()
+          && request.resource.data.author.user_id == request.auth.uid
+          && request.resource.data.resolved == false
+          && request.resource.data.world_x is number
+          && request.resource.data.world_y is number
+          && validContent(request.resource.data.content);
+
+        // content 只有作者能改；resolved 任何成員都能切換；座標與作者不可改。
+        allow update: if isProjectMember()
+          && changedOnly(['content', 'resolved', 'updated_at'])
+          && validContent(request.resource.data.content)
+          && (isAuthor() || request.resource.data.content == resource.data.content);
+
+        // 作者可以刪自己的留言；owner 刪除專案時要一併清掉子集合。
+        allow delete: if signedIn()
+          && (isAuthor() || request.auth.uid == project().owner_id);
+      }
+    }
+  }
+}
