@@ -7,7 +7,7 @@
 
 | 功能 | FastAPI 版 | Firebase 版 | 改動位置 |
 |---|---|---|---|
-| 註冊 / 登入 / 登出 | JWT + HttpOnly refresh cookie + rotation | Firebase Authentication（Email/Password） | `services/api.ts` |
+| 註冊 / 登入 / 登出 | JWT + HttpOnly refresh cookie + rotation | Firebase Authentication（Google 登入 + Email/Password） | `services/api.ts`、`components/auth/GoogleSignInButton.vue` |
 | 雲端專案 CRUD | PostgreSQL `projects`（JSONB） | Firestore `projects/{id}`（document 存 JSON 字串） | `services/projects.ts` |
 | 樂觀鎖 | `UPDATE ... WHERE document_version = ?` | `runTransaction` 比對版本 + rules 限制只能 +1 | `services/projects.ts`、`firestore.rules` |
 | 成員 | `project_members` 表 | `member_ids` 陣列 + `users/{uid}` 名片 | `services/members.ts` |
@@ -49,7 +49,7 @@ projects/{projectId}/comments/{commentId}
 ## 部署步驟
 
 1. Firebase Console 建立專案（Spark 免費方案即可）。
-2. Authentication → Sign-in method → 啟用 **Email/Password**。
+2. Authentication → Sign-in method → 啟用 **Google**（支援電子郵件填自己的 Gmail）與 **Email/Password**。
 3. Firestore Database → 建立資料庫（建議區域 `asia-east1`），以 production mode 開始。
 4. 專案設定 → 新增 Web App，把 config 填進 `.env.production`（本機開發填 `.env.development.local`）。
 5. 複製 `.firebaserc.example` 為 `.firebaserc`，填入專案 ID。

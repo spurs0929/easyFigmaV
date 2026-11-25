@@ -6,6 +6,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Password from 'primevue/password'
 import AuthShell from '@/components/auth/AuthShell.vue'
+import GoogleSignInButton from '@/components/auth/GoogleSignInButton.vue'
 import { useAuthStore } from '@/store/auth'
 
 const auth = useAuthStore()
@@ -46,6 +47,8 @@ async function submit(): Promise<void> {
 
 <template>
   <AuthShell title="註冊" subtitle="建立帳號以在多個裝置間同步專案">
+    <GoogleSignInButton @signed-in="router.replace('/')" />
+
     <form class="auth-form" @submit.prevent="submit">
       <div class="auth-field">
         <label for="register-email">Email</label>

@@ -6,6 +6,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Password from 'primevue/password'
 import AuthShell from '@/components/auth/AuthShell.vue'
+import GoogleSignInButton from '@/components/auth/GoogleSignInButton.vue'
 import { useAuthStore } from '@/store/auth'
 
 const auth = useAuthStore()
@@ -29,14 +30,20 @@ function safeRedirect(value: unknown): string {
   return '/'
 }
 
+async function goBack(): Promise<void> {
+  await router.replace(safeRedirect(route.query.redirect))
+}
+
 async function submit(): Promise<void> {
   if (!(await auth.login(email.value.trim(), password.value))) return
-  await router.replace(safeRedirect(route.query.redirect))
+  await goBack()
 }
 </script>
 
 <template>
   <AuthShell title="登入" subtitle="登入後即可將專案儲存到雲端">
+    <GoogleSignInButton @signed-in="goBack" />
+
     <form class="auth-form" @submit.prevent="submit">
       <div class="auth-field">
         <label for="login-email">Email</label>

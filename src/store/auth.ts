@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import {
   ensureBootstrapped,
   login as apiLogin,
+  loginWithGoogle as apiLoginWithGoogle,
   logout as apiLogout,
   logoutAll as apiLogoutAll,
   onSessionChange,
@@ -64,6 +65,12 @@ export const useAuthStore = defineStore('auth', () => {
     return session !== null
   }
 
+  async function loginWithGoogle(): Promise<boolean> {
+    const session = await run(() => apiLoginWithGoogle())
+    if (session) user.value = session.user
+    return session !== null
+  }
+
   async function register(
     email: string,
     password: string,
@@ -109,6 +116,7 @@ export const useAuthStore = defineStore('auth', () => {
     displayName,
     bootstrap,
     login,
+    loginWithGoogle,
     register,
     logout,
     logoutAll,

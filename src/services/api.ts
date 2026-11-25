@@ -1,12 +1,14 @@
 import {
   createUserWithEmailAndPassword,
+  GoogleAuthProvider,
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut,
   updateProfile,
   type User as FirebaseUser,
 } from 'firebase/auth'
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
 import { db, firebaseAuth } from '@/services/firebase'
 
 // firebase-demo 分支：認證改由 Firebase Authentication 負責。
@@ -150,6 +152,36 @@ export async function register(input: {
     display_name: input.display_name ?? null,
     created_at: serverTimestamp(),
   })
+
+  const session = toSession(user)!
+  publish(session)
+  return session
+}
+
+/**
+ * 用 Google 帳號登入。第一次登入等同註冊：Firebase Auth 自動建立使用者，
+ * 這裡補建 users/{uid} 名片，邀請成員時才查得到這個人。
+ *
+ * 用 popup 而不是 redirect：redirect 在 Firebase Hosting 以外的網域、以及
+ * Safari 擋第三方 storage 時容易失敗；popup 只要使用者允許彈出視窗即可。
+ */
+export async function loginWithGoogle(): Promise<Session> {
+  const provider = new GoogleAuthProvider()
+  // 已登入過 Google 的人也讓他選帳號，共用電腦上不會直接用到別人的帳號。
+  provider.setCustomParameters({ prompt: 'select_account' })
+
+  const { user } = await signInWithPopup(firebaseAuth, provider)
+
+  const profileRef = doc(db, 'users', user.uid)
+  if (!(await getDoc(profileRef)).exists()) {
+    const email = user.email ?? ''
+    await setDoc(profileRef, {
+      email,
+      email_lower: email.toLowerCase(),
+      display_name: user.displayName,
+      created_at: serverTimestamp(),
+    })
+  }
 
   const session = toSession(user)!
   publish(session)
